@@ -337,7 +337,11 @@ def rotate_iou_gpu_eval(boxes, query_boxes, criterion=-1, device_id=0):
         query_boxes_dev = cuda.to_device(query_boxes.reshape([-1]), stream)
         iou_dev = cuda.to_device(iou.reshape([-1]), stream)
         rotate_iou_kernel_eval[blockspergrid, threadsPerBlock, stream](
+<<<<<<< HEAD
             np.int64(N), np.int64(K), boxes_dev, query_boxes_dev, iou_dev, np.int32(criterion))
+=======
+            np.int64(N), np.int64(K), boxes_dev, query_boxes_dev, iou_dev, criterion)
+>>>>>>> 8898a20 (Bug fixes 2)
         iou_dev.copy_to_host(iou.reshape([-1]), stream=stream)
     return iou.astype(boxes.dtype)
 
