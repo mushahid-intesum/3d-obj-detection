@@ -1,6 +1,6 @@
 dataset:
   type: kitti
-  root_dir: /home/mushahidintesum/Documents/wei tang/monomh-enhanced/kitti
+  root_dir: /mnt/Stuff/3d-mono-obj-det/kitti
   eval_cls:
   - Car
   - Pedestrian

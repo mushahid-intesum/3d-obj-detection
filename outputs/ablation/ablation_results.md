@@ -1,18 +1,18 @@
 # MonoMH-Enhanced Ablation Results
 
-Generated: 2026-10-03 00:25:14
+Generated: 2026-10-03 12:26:55
 
 ## Ablation Matrix
 
 | Exp | Name | A1 | B2 | C2 | D1 | Status | Duration | AP₃D Easy | AP₃D Mod | AP₃D Hard |
 |-----|------|----|----|----|----|---------|---------:|----------:|---------:|----------:|
-| 0 | baseline | — | — | — | — | dry_run | — | — | — | — |
-| 1 | A1_only | ✅ | — | — | — | dry_run | — | — | — | — |
-| 2 | B2_only | — | ✅ | — | — | dry_run | — | — | — | — |
-| 3 | C2_only | — | — | — | — | dry_run | — | — | — | — |
-| 4 | D1_only | — | — | — | ✅ | dry_run | — | — | — | — |
-| 5 | A1_D1 | ✅ | — | — | ✅ | dry_run | — | — | — | — |
-| 6 | full | ✅ | ✅ | — | ✅ | dry_run | — | — | — | — |
+| 0 | baseline | — | — | — | — | failed | 1.4m | — | — | — |
+| 1 | A1_only | ✅ | — | — | — | failed | 1.4m | — | — | — |
+| 2 | B2_only | — | ✅ | — | — | failed | 1.4m | — | — | — |
+| 3 | C2_only | — | — | — | — | failed | 1.4m | — | — | — |
+| 4 | D1_only | — | — | — | ✅ | failed | 1.4m | — | — | — |
+| 5 | A1_D1 | ✅ | — | — | ✅ | failed | 1.4m | — | — | — |
+| 6 | full | ✅ | ✅ | — | ✅ | failed | 1.4m | — | — | — |
 
 ## Improvement Analysis (vs. Baseline)
 

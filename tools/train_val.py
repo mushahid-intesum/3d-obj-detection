@@ -55,8 +55,6 @@ def main():
         wandb.init(project=args.work_date, dir=output_path)
         wandb.run.name = args.work_date + "_" + args.work_dir
         wandb.config.update(args)
-        wandb.run.save()
-
     
     #  build dataloader
     train_loader, val_loader, test_loader = build_dataloader(cfg['dataset'])

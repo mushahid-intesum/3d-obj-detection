@@ -283,7 +283,7 @@ class Trainer(object):
         self.model.eval()
 
         if self.eval_dataset == "kitti":
-            gt_folder = self.cfg_data + "/training/label_2"
+            gt_folder = self.cfg_data['root_dir'] + "/training/label_2"
         else:
             raise NotImplementedError
 
