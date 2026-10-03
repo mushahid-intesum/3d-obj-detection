@@ -402,7 +402,7 @@ def check_depth_priors(data_dir):
 
 def main():
     parser = argparse.ArgumentParser(description='MonoMH-Enhanced Ablation Runner')
-    parser.add_argument('--data_dir', type=str, required=True,
+    parser.add_argument('--data_dir', type=str, default='/mnt/Stuff/3d-mono-obj-det/kitti',
                         help='Path to KITTI dataset root')
     parser.add_argument('--base_config', type=str, default=os.path.join(ROOT_DIR, 'lib', 'kitti.yaml'),
                         help='Base config file (default: lib/kitti.yaml)')
