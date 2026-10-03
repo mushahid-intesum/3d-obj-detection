@@ -98,27 +98,28 @@ class MonoMH(nn.Module):
 
         # === Enhancement Module Initialization (all config-gated) ===
         # D1: Hypothesis Early Exit
-        self._early_exit_enabled = self.enhancements_cfg.get('early_exit', {}).get('enabled', False)
+        ee_cfg = self.enhancements_cfg.get('early_exit', {})
+        self._early_exit_enabled = ee_cfg.get('enabled', False)
         if self._early_exit_enabled:
             from lib.modules.early_exit import AmbiguityPredictor
-            ee_cfg = self.enhancements_cfg['early_exit']
             self.ambiguity_predictor = AmbiguityPredictor(
                 in_channels=channels[self.first_level] + 2 + self.cls_num,
-                hidden_dim=ee_cfg.get('hidden_dim', 64)
+                hidden_dim=ee_cfg['hidden_dim']
             )
 
         # B2: Intrinsic-Conditioned Hypothesis Diversity
-        self._intrinsic_cond_enabled = self.enhancements_cfg.get('intrinsic_conditioner', {}).get('enabled', False)
+        ic_cfg = self.enhancements_cfg.get('intrinsic_conditioner', {})
+        self._intrinsic_cond_enabled = ic_cfg.get('enabled', False)
         if self._intrinsic_cond_enabled:
             from lib.modules.intrinsic_conditioner import IntrinsicConditioner
-            ic_cfg = self.enhancements_cfg['intrinsic_conditioner']
             self.intrinsic_conditioner = IntrinsicConditioner(
-                hidden_dim=ic_cfg.get('hidden_dim', 32),
-                modulation_range=ic_cfg.get('modulation_range', 0.3)
+                hidden_dim=ic_cfg['hidden_dim'],
+                modulation_range=ic_cfg['modulation_range']
             )
 
         # C2: Depth Prior Warm-Start (learnable affine alignment params)
-        self._depth_prior_enabled = self.enhancements_cfg.get('depth_prior', {}).get('enabled', False)
+        dp_cfg = self.enhancements_cfg.get('depth_prior', {})
+        self._depth_prior_enabled = dp_cfg.get('enabled', False)
         if self._depth_prior_enabled:
             self.prior_scale = nn.Parameter(torch.tensor(1.0))
             self.prior_shift = nn.Parameter(torch.tensor(0.0))
@@ -155,8 +156,9 @@ class MonoMH(nn.Module):
         # B2: Compute per-image dynamic threshold from focal length
         if self._intrinsic_cond_enabled and calibs is not None:
             f_y = calibs[:, 1, 1]  # focal length y from P2 matrix
-            base_tau = self.enhancements_cfg['intrinsic_conditioner'].get('base_threshold', 0.75)
-            ret['dynamic_tau'] = self.intrinsic_conditioner(f_y, base_threshold=base_tau)
+            ret['dynamic_tau'] = self.intrinsic_conditioner(
+                f_y, base_threshold=self.enhancements_cfg['intrinsic_conditioner']['base_threshold']
+            )
 
         return ret
 

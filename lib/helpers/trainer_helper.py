@@ -64,12 +64,12 @@ class Trainer(object):
         if pf_cfg.get('enabled', False):
             from lib.modules.prototype_filter import PrototypeBank
             self.prototype_bank = PrototypeBank(
-                dim=pf_cfg.get('feature_dim', 64),
-                K=pf_cfg.get('num_prototypes', 192),
-                m=pf_cfg.get('members_per_proto', 512),
-                alpha=pf_cfg.get('ema_alpha', 0.005),
-                similarity_threshold=pf_cfg.get('similarity_threshold', 0.85),
-                depth_reliability_threshold=pf_cfg.get('depth_reliability_threshold', 0.3),
+                dim=pf_cfg['feature_dim'],
+                K=pf_cfg['num_prototypes'],
+                m=pf_cfg['members_per_proto'],
+                alpha=pf_cfg['ema_alpha'],
+                similarity_threshold=pf_cfg['similarity_threshold'],
+                depth_reliability_threshold=pf_cfg['depth_reliability_threshold'],
                 device=str(self.device)
             )
             self.logger.info(f'[A1] PrototypeBank initialized: {self.prototype_bank}')
@@ -77,39 +77,14 @@ class Trainer(object):
     def _make_criterion(self):
         """
         Build SoftBoM_Loss with enhancement configs (C2 + D1).
-        Computes the epoch-decaying prior_weight and passes the model's
-        learnable affine alignment parameters.
+        The loss class derives prior_weight, affine params, and amb_loss_weight
+        internally from the config and model reference.
         """
-        from lib.modules.depth_prior import compute_prior_loss_weight
-
-        dp_cfg = self.cfg_enhancements.get('depth_prior', {})
-        prior_weight = 0.0
-        prior_scale = None
-        prior_shift = None
-
-        if dp_cfg.get('enabled', False):
-            prior_weight = compute_prior_loss_weight(
-                epoch=self.epoch,
-                warmstart_epochs=dp_cfg.get('warmstart_epochs', 50),
-                initial_weight=dp_cfg.get('prior_loss_weight', 1.0)
-            )
-            # Access the underlying model (unwrap DataParallel)
-            base_model = self.model.module if hasattr(self.model, 'module') else self.model
-            if hasattr(base_model, 'prior_scale'):
-                prior_scale = base_model.prior_scale
-                prior_shift = base_model.prior_shift
-
-        # D1: Early exit ambiguity loss weight
-        ee_cfg = self.cfg_enhancements.get('early_exit', {})
-        amb_loss_weight = ee_cfg.get('loss_weight', 0.0) if ee_cfg.get('enabled', False) else 0.0
-
+        base_model = self.model.module if hasattr(self.model, 'module') else self.model
         return SoftBoM_Loss(
             epoch=self.epoch,
             enhancements_cfg=self.cfg_enhancements,
-            prior_weight=prior_weight,
-            prior_scale=prior_scale,
-            prior_shift=prior_shift,
-            amb_loss_weight=amb_loss_weight
+            model_ref=base_model
         )
 
     def train(self):
@@ -259,8 +234,7 @@ class Trainer(object):
 
             # A1: Update prototype bank with GT RoI features after warmup
             if self.prototype_bank is not None:
-                pf_cfg = self.cfg_enhancements.get('prototype_filter', {})
-                warmup = pf_cfg.get('warmup_epochs', 10)
+                warmup = self.cfg_enhancements['prototype_filter']['warmup_epochs']
                 if self.epoch >= warmup and 'roi_features' in outputs:
                     import torch.nn.functional as F_proto
                     roi_feat = outputs['roi_features']  # (N, 64, 7, 7) detached

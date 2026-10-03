@@ -62,25 +62,38 @@ class Hierarchical_Task_Learning:
 
 
 class SoftBoM_Loss(nn.Module):
-    def __init__(self, epoch, enhancements_cfg=None, prior_weight=0.0,
-                 prior_scale=None, prior_shift=None, amb_loss_weight=0.0):
+    def __init__(self, epoch, enhancements_cfg=None, model_ref=None):
         super().__init__()
         self.stat = {}
         self.epoch = epoch
-        # C2: Depth prior warm-start config
         self.enhancements_cfg = enhancements_cfg or {}
-        self.prior_weight = prior_weight
-        self.prior_scale = prior_scale
-        self.prior_shift = prior_shift
+
+        # C2: Depth prior warm-start — derive weight and affine params from config + model
+        dp_cfg = self.enhancements_cfg.get('depth_prior', {})
+        self.prior_weight = 0.0
+        self.prior_scale = None
+        self.prior_shift = None
+        if dp_cfg.get('enabled', False) and model_ref is not None:
+            from lib.modules.depth_prior import compute_prior_loss_weight
+            self.prior_weight = compute_prior_loss_weight(
+                epoch=epoch,
+                warmstart_epochs=dp_cfg['warmstart_epochs'],
+                initial_weight=dp_cfg['prior_loss_weight']
+            )
+            if hasattr(model_ref, 'prior_scale'):
+                self.prior_scale = model_ref.prior_scale
+                self.prior_shift = model_ref.prior_shift
         self._depth_prior_enabled = (
-            self.enhancements_cfg.get('depth_prior', {}).get('enabled', False)
+            dp_cfg.get('enabled', False)
             and self.prior_weight > 0
             and self.prior_scale is not None
         )
-        # D1: Early exit ambiguity loss config
-        self.amb_loss_weight = amb_loss_weight
+
+        # D1: Early exit ambiguity loss — derive weight from config
+        ee_cfg = self.enhancements_cfg.get('early_exit', {})
+        self.amb_loss_weight = ee_cfg['loss_weight'] if ee_cfg.get('enabled', False) else 0.0
         self._early_exit_enabled = (
-            self.enhancements_cfg.get('early_exit', {}).get('enabled', False)
+            ee_cfg.get('enabled', False)
             and self.amb_loss_weight > 0
         )
 

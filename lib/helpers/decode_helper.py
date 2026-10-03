@@ -40,8 +40,8 @@ def decode_detections(dets, info, calibs, cls_mean_size, threshold,
                   early_exit_cfg.get('enabled', False) and
                   amb_scores is not None)
     if ee_enabled:
-        easy_threshold = early_exit_cfg.get('easy_threshold', 0.2)
-        hard_threshold = early_exit_cfg.get('hard_threshold', 0.7)
+        easy_threshold = early_exit_cfg['easy_threshold']
+        hard_threshold = early_exit_cfg['hard_threshold']
         # MEDIUM regions: top-center, center, bottom-center
         medium_regions = [regions[1], regions[4], regions[7]]
 
@@ -54,8 +54,7 @@ def decode_detections(dets, info, calibs, cls_mean_size, threshold,
                   proto_filter_cfg.get('enabled', False) and
                   prototype_bank.bank.num_prototypes > 0)
     if a1_enabled:
-        a1_sim_thresh = proto_filter_cfg.get('similarity_threshold', 0.85)
-        a1_depth_thresh = proto_filter_cfg.get('depth_reliability_threshold', 0.3)
+        a1_depth_thresh = proto_filter_cfg['depth_reliability_threshold']
     
     results = {}
     for i in range(dets.shape[0]):  # batch
@@ -165,7 +164,7 @@ def decode_detections(dets, info, calibs, cls_mean_size, threshold,
     return results
 
 
-def extract_dets_from_outputs(outputs, conf_mode='ada', K=50):
+def extract_dets_from_outputs(outputs, K=50):
 
     roi_size = 7
     # get src outputs
