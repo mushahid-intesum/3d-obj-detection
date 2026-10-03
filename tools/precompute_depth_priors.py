@@ -119,9 +119,9 @@ def predict_depth(img_tensor, model_info, model_type, device='cuda'):
 
 def main():
     parser = argparse.ArgumentParser(description='Precompute depth priors for KITTI')
-    parser.add_argument('--data_dir', type=str, required=True,
+    parser.add_argument('--data_dir', type=str, default='/mnt/Stuff/3d-mono-obj-det/kitti/training',
                         help='Path to KITTI training directory (e.g., kitti/training)')
-    parser.add_argument('--output_dir', type=str, default=None,
+    parser.add_argument('--output_dir', type=str, default='/mnt/Stuff/3d-mono-obj-det/3d-obj-detection/lib/backbones/depth_priors',
                         help='Output directory for .npy files (default: <data_dir>/depth_prior)')
     parser.add_argument('--model', type=str, default='depth_anything_v2_vits',
                         choices=['depth_anything_v2_vits', 'midas', 'gradient_proxy'],
