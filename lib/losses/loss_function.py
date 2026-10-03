@@ -40,7 +40,12 @@ class Hierarchical_Task_Learning:
             mean_diff = (past_loss[:-2]-past_loss[2:]).mean(0)
             if not hasattr(self, 'init_diff'):
                 self.init_diff = mean_diff
-            c_weights = 1-(mean_diff/self.init_diff).relu().unsqueeze(0)
+            # Guard: clamp init_diff to avoid divide-by-zero → inf → NaN cascade
+            safe_init_diff = self.init_diff.clone()
+            safe_init_diff[safe_init_diff.abs() < 1e-8] = 1e-8
+            c_weights = 1-(mean_diff/safe_init_diff).relu().unsqueeze(0)
+            # Replace any NaN in c_weights with 0 (fully gated)
+            c_weights = torch.nan_to_num(c_weights, nan=0.0, posinf=0.0, neginf=0.0)
             
             time_value = min(((epoch-5)/(T-5)),1.0)
             for current_topic in self.loss_graph:
@@ -48,12 +53,17 @@ class Hierarchical_Task_Learning:
                     control_weight = 1.0
                     for pre_topic in self.loss_graph[current_topic]:
                         control_weight *= c_weights[0][self.term2index[pre_topic]]      
-                    loss_weights[current_topic] = time_value**(1-control_weight)
-                    if loss_weights[current_topic] != loss_weights[current_topic]:
-                        for pre_topic in self.loss_graph[current_topic]:
-                            print('NAN===============', time_value, control_weight, c_weights[0][self.term2index[pre_topic]], pre_topic, self.term2index[pre_topic])
+                    # Guard: if control_weight is NaN, treat as fully gated (weight=0)
+                    if control_weight != control_weight:
+                        loss_weights[current_topic] = torch.tensor(0.0).to(current_loss[current_topic].device)
+                    else:
+                        loss_weights[current_topic] = time_value**(1-control_weight)
+                        # Clamp to valid range
+                        loss_weights[current_topic] = max(0.0, min(1.0, loss_weights[current_topic]))
             #pop first list
             self.past_losses.pop(0)
+        # Replace NaN in eval_loss_input before storing (prevents NaN propagation to next epochs)
+        eval_loss_input = torch.nan_to_num(eval_loss_input, nan=0.0, posinf=0.0, neginf=0.0)
         self.past_losses.append(eval_loss_input)
 
         return loss_weights

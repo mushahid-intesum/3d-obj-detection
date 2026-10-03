@@ -276,7 +276,23 @@ class Trainer(object):
             if loss_weights is not None:
                 total_loss = torch.zeros(1).cuda()
                 for key in loss_weights.keys():
-                    total_loss += loss_weights[key].detach()*loss_terms[key]
+                    w = loss_weights[key].detach() if hasattr(loss_weights[key], 'detach') else loss_weights[key]
+                    term = loss_terms[key]
+                    # Skip NaN loss terms to prevent contamination
+                    if isinstance(term, torch.Tensor) and (torch.isnan(term) or torch.isinf(term)):
+                        continue
+                    # Skip NaN weights
+                    if isinstance(w, torch.Tensor) and (torch.isnan(w) or torch.isinf(w)):
+                        continue
+                    if isinstance(w, float) and (w != w):  # NaN check for float
+                        continue
+                    total_loss += w * term
+
+            # Guard: skip backward if total_loss is NaN/Inf (prevents model weight corruption)
+            if torch.isnan(total_loss).any() or torch.isinf(total_loss).any():
+                self.optimizer.zero_grad()
+                continue
+
             total_loss.backward()
             self.optimizer.step()
 
@@ -324,6 +340,9 @@ class Trainer(object):
                 
         for key in stat_dict.keys():
             stat_dict[key] /= trained_batch
+            # Guard: replace NaN/Inf stats with 0 to prevent HTL weightor corruption
+            if isinstance(stat_dict[key], torch.Tensor):
+                stat_dict[key] = torch.nan_to_num(stat_dict[key], nan=0.0, posinf=0.0, neginf=0.0)
                             
         return stat_dict    
 
