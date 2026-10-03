@@ -111,9 +111,9 @@ def build_experiment_config(base_cfg, exp_id, data_dir, quick=False):
 
     # Quick mode: reduce epochs significantly
     if quick:
-        cfg['trainer']['max_epoch'] = 8
-        cfg['trainer']['eval_start'] = 2
-        cfg['trainer']['eval_frequency'] = 2
+        cfg['trainer']['max_epoch'] = 2
+        cfg['trainer']['eval_start'] = 1
+        cfg['trainer']['eval_frequency'] = 1
         cfg['trainer']['save_frequency'] = 1
 
     # Apply enhancement toggles
