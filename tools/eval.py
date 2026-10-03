@@ -1403,13 +1403,16 @@ def eval_from_scrach(gt_dir, det_dir, eval_cls_list=None, ap_mode=40):
     if AP_mode == 11:
         print('-' * 40 + 'AP11 evaluation' + '-' * 40)
 
-    # print('------------------evalute model: {}--------------------'.format(det_dir.split('/')[-3]))
     print('------------------evalute model: {}--------------------'.format(det_dir.split('/')[-2]))
+    all_cls_res = {}
     for cls in eval_cls_list:
         print('*' * 20 + cls + '*' * 20)
         res = get_official_eval_result(all_gt, all_det, cls, z_axis=1, z_center=1)
-        Car_res = res['detail'][cls]
-        for k in Car_res.keys():
-            print(k, Car_res[k])
+        cls_res = res['detail'][cls]
+        all_cls_res[cls] = cls_res
+        for k in cls_res.keys():
+            print(k, cls_res[k])
     print('\n')
-    return Car_res
+    # Return Car results for backward compatibility with trainer
+    return all_cls_res.get('Car', all_cls_res.get(eval_cls_list[0], {}))
+
