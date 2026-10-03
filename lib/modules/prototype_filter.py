@@ -54,6 +54,18 @@ class TwoStageBin:
     def num_members(self):
         return sum(m.size(0) for m in self.members) if self.num_prototypes > 0 else 0
 
+    def state_dict(self):
+        return {
+            'M': self.M.cpu(),
+            'count': self.count.cpu(),
+            'members': [m.cpu() for m in self.members],
+        }
+
+    def load_state_dict(self, state):
+        self.M = state['M'].to(self.device)
+        self.count = state['count'].to(self.device)
+        self.members = [m.to(self.device) for m in state['members']]
+
 
 class PrototypeBank:
     """
@@ -167,6 +179,12 @@ class PrototypeBank:
         return (f"PrototypeBank(dim={self.dim}, "
                 f"prototypes={self.bank.num_prototypes}/{self.bank.K}, "
                 f"members={self.bank.num_members})")
+
+    def state_dict(self):
+        return self.bank.state_dict()
+
+    def load_state_dict(self, state):
+        self.bank.load_state_dict(state)
 
 
 def extract_roi_window_features(roi_features, regions, backbone_channels=64):

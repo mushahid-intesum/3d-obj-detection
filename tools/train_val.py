@@ -22,6 +22,8 @@ parser = argparse.ArgumentParser(description='implementation of MonoMH')
 parser.add_argument('--config', default='lib/kitti.yaml', dest='config', help='settings of detection in yaml format')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true', help='evaluate model on validation set')
 parser.add_argument('-t', '--test', dest='test', action='store_true', help='evaluate model on test set')
+parser.add_argument('--resume', action='store_true', help='resume training from latest checkpoint')
+parser.add_argument('--resume-from', default=None, type=str, help='resume from a specific checkpoint path')
 parser.add_argument('--work-date', default='test', type=str, help='output_path, date')
 parser.add_argument('--work-dir', default='test', type=str, help='output_path, dir')
 parser.add_argument('--save-path', default='outputs/', type=str, help='save path for output (defualt: outputs/)')
@@ -96,6 +98,21 @@ def main():
                       warmup_lr_scheduler=warmup_lr_scheduler,
                       logger=logger,
                       output_path=output_path)
+
+    # Resume from checkpoint if requested
+    resume_path = args.resume_from
+    if resume_path is None and args.resume:
+        # Auto-detect latest checkpoint
+        latest = os.path.join(output_path, 'checkpoints', 'latest_checkpoint.pth')
+        if os.path.isfile(latest):
+            resume_path = latest
+            logger.info("Auto-detected checkpoint: {}".format(latest))
+        else:
+            logger.info("No latest checkpoint found at {}, starting from scratch".format(latest))
+
+    if resume_path is not None and os.path.isfile(resume_path):
+        trainer.resume_from_checkpoint(resume_path)
+
     trainer.train()
 
 

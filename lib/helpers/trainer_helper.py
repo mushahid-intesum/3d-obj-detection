@@ -5,7 +5,8 @@ import wandb
 import torch
 import torch.nn as nn
 import numpy as np
-from lib.helpers.save_helper import get_checkpoint_state, save_checkpoint, load_checkpoint
+from lib.helpers.save_helper import (get_checkpoint_state, get_full_checkpoint_state,
+                                     save_checkpoint, load_checkpoint, load_full_checkpoint)
 from lib.losses.loss_function import SoftBoM_Loss,Hierarchical_Task_Learning
 from lib.helpers.decode_helper import extract_dets_from_outputs, decode_detections
 
@@ -86,6 +87,50 @@ class Trainer(object):
             enhancements_cfg=self.cfg_enhancements,
             model_ref=base_model
         )
+
+    def resume_from_checkpoint(self, ckpt_path):
+        """Resume full training state from a checkpoint file."""
+        self.logger.info("==> Resuming from checkpoint: {}".format(ckpt_path))
+        checkpoint = torch.load(ckpt_path, map_location=self.device)
+        epoch, best_results, proto_state = load_full_checkpoint(
+            checkpoint, self.model, self.optimizer,
+            self.lr_scheduler, self.warmup_lr_scheduler,
+            logger=self.logger, map_location=self.device
+        )
+        self.epoch = epoch
+        if best_results is not None:
+            self.best_e_result = best_results.get('best_e_result', -1)
+            self.best_e_epoch = best_results.get('best_e_epoch', -1)
+            self.best_m_result = best_results.get('best_m_result', -1)
+            self.best_m_epoch = best_results.get('best_m_epoch', -1)
+            self.best_h_result = best_results.get('best_h_result', -1)
+            self.best_h_epoch = best_results.get('best_h_epoch', -1)
+            self.logger.info("  Restored best results: E={:.2f}@{}, M={:.2f}@{}, H={:.2f}@{}".format(
+                self.best_e_result, self.best_e_epoch,
+                self.best_m_result, self.best_m_epoch,
+                self.best_h_result, self.best_h_epoch))
+        if proto_state is not None and self.prototype_bank is not None:
+            self.prototype_bank.load_state_dict(proto_state)
+            self.logger.info("  Restored prototype bank state")
+        self.logger.info("==> Resuming training from epoch {}".format(self.epoch + 1))
+
+    def _save_latest_checkpoint(self):
+        """Save full training state as latest_checkpoint.pth for auto-resume."""
+        os.makedirs(self.output_path + '/checkpoints', exist_ok=True)
+        best_results = {
+            'best_e_result': self.best_e_result, 'best_e_epoch': self.best_e_epoch,
+            'best_m_result': self.best_m_result, 'best_m_epoch': self.best_m_epoch,
+            'best_h_result': self.best_h_result, 'best_h_epoch': self.best_h_epoch,
+        }
+        state = get_full_checkpoint_state(
+            model=self.model, optimizer=self.optimizer, epoch=self.epoch,
+            lr_scheduler=self.lr_scheduler,
+            warmup_lr_scheduler=self.warmup_lr_scheduler,
+            best_results=best_results,
+            prototype_bank=self.prototype_bank
+        )
+        ckpt_path = os.path.join(self.output_path, 'checkpoints', 'latest_checkpoint')
+        save_checkpoint(state, ckpt_path, self.logger)
 
     def train(self):
         start_epoch = self.epoch
@@ -171,6 +216,9 @@ class Trainer(object):
                 else:
                     ckpt_name = os.path.join(self.output_path+'/checkpoints', 'checkpoint_epoch_%d' % self.epoch)
                     save_checkpoint(get_checkpoint_state(self.model, self.optimizer, self.epoch), ckpt_name, self.logger)
+
+            # Save latest checkpoint every epoch for auto-resume
+            self._save_latest_checkpoint()
         return None
     
     def compute_e0_loss(self):

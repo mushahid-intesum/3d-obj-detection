@@ -167,6 +167,7 @@ def run_experiment(config_path, exp_dir, exp_id, gpu_id, dry_run=False):
         '--work-date', 'ablation',
         '--work-dir', f'exp{exp_id}_{exp_name}',
         '--save-path', exp_dir,
+        '--resume',
     ]
 
     env = os.environ.copy()
