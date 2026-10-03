@@ -132,36 +132,39 @@ This generates a `.npy` depth map for each training image. The script tries Dept
 
 ## Configuration
 
-All settings are in `lib/kitti.yaml`. Key sections:
+All settings are in `lib/kitti.yaml`. This file is the **single source of truth** — the code reads config values via direct dictionary access (e.g., `cfg['hidden_dim']`) with no in-code fallback constants. Every key listed below must be present in the YAML when its module is enabled.
+
+> [!CAUTION]
+> Do not remove any keys from the `enhancements` block. The code will raise a `KeyError` if a required key is missing when its module is enabled.
 
 ### Dataset
 
-| Key | Default | Description |
-|-----|---------|-------------|
+| Key | Value | Description |
+|-----|-------|-------------|
 | `root_dir` | `/your/data/path/KITTIDataset` | **Must set** — Path to KITTI root |
-| `batch_size` | 16 | Training batch size |
-| `num_workers` | 8 | Dataloader workers |
+| `batch_size` | `16` | Training batch size |
+| `num_workers` | `8` | Dataloader workers |
 | `eval_cls` | `['Car', 'Pedestrian', 'Cyclist']` | Classes to evaluate |
 
 ### Training
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `max_epoch` | 200 | Total training epochs |
-| `eval_start` | 10 | First evaluation epoch |
-| `eval_frequency` | 10 | Evaluate every N epochs |
-| `disp_frequency` | 100 | Print loss every N batches |
+| Key | Value | Description |
+|-----|-------|-------------|
+| `max_epoch` | `200` | Total training epochs |
+| `eval_start` | `10` | First evaluation epoch |
+| `eval_frequency` | `10` | Evaluate every N epochs |
+| `disp_frequency` | `100` | Print loss every N batches |
 
 ### Optimizer
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `lr` | 0.00125 | Learning rate |
-| `weight_decay` | 0.00001 | Weight decay |
+| Key | Value | Description |
+|-----|-------|-------------|
+| `lr` | `0.00125` | Learning rate |
+| `weight_decay` | `0.00001` | Weight decay |
 
 ### Enhancements
 
-All enhancement modules are **disabled by default**. Set `enabled: true` to activate. See [Enhancement Modules](#enhancement-modules) for details.
+All enhancement modules are **disabled by default**. Set `enabled: true` to activate. When a module is enabled, **all of its keys are required**. See [Enhancement Modules](#enhancement-modules) for details.
 
 ---
 
@@ -270,6 +273,8 @@ The evaluation reports AP₃D (Average Precision for 3D detection) at IoU thresh
 
 ## Enhancement Modules
 
+When an enhancement is enabled, **all keys in its config block are required** — the code reads them directly without fallback defaults.
+
 ### A1: Prototype-Based Hypothesis Filtering
 
 **Source:** Adapted from MonoSAOD
@@ -278,14 +283,14 @@ Replaces the hardcoded confidence threshold for hypothesis generation with a lea
 
 ```yaml
 prototype_filter:
-  enabled: true
-  num_prototypes: 192         # max prototype centroids
-  members_per_proto: 512      # FIFO buffer per prototype
-  similarity_threshold: 0.85  # cosine similarity threshold
-  depth_reliability_threshold: 0.3  # min depth reliability
-  ema_alpha: 0.005            # EMA update rate
-  feature_dim: 64             # backbone feature dimension
-  warmup_epochs: 10           # delay before bank is used
+  enabled: true                         # toggle this module on/off
+  num_prototypes: 192                   # (required) max prototype centroids
+  members_per_proto: 512                # (required) FIFO buffer per prototype
+  similarity_threshold: 0.85            # (required) cosine similarity threshold
+  depth_reliability_threshold: 0.3      # (required) min depth reliability
+  ema_alpha: 0.005                      # (required) EMA update rate
+  feature_dim: 64                       # (required) backbone feature dimension
+  warmup_epochs: 10                     # (required) delay before bank is used
 ```
 
 **Expected effect:** Improved AP₃D Hard (+0.5–1.5%) by filtering unreliable hypotheses.
@@ -298,10 +303,10 @@ A lightweight MLP that maps the camera focal length to a per-image confidence th
 
 ```yaml
 intrinsic_conditioner:
-  enabled: true
-  base_threshold: 0.75       # baseline threshold
-  modulation_range: 0.3      # max shift range
-  hidden_dim: 32              # MLP hidden size (~97 params)
+  enabled: true                         # toggle this module on/off
+  base_threshold: 0.75                  # (required) baseline threshold
+  modulation_range: 0.3                 # (required) max shift range
+  hidden_dim: 32                        # (required) MLP hidden size (~97 params)
 ```
 
 **Expected effect:** Better cross-camera generalization; adaptive hypothesis count.
@@ -314,10 +319,10 @@ Uses precomputed relative depth maps (from Depth Anything V2 or similar) to warm
 
 ```yaml
 depth_prior:
-  enabled: true
-  prior_dir: 'depth_prior'    # relative to kitti/training/
-  warmstart_epochs: 50        # decay period
-  prior_loss_weight: 1.0      # initial loss weight
+  enabled: true                         # toggle this module on/off
+  prior_dir: 'depth_prior'              # (required) relative to kitti/training/
+  warmstart_epochs: 50                  # (required) decay period
+  prior_loss_weight: 1.0                # (required) initial loss weight
 ```
 
 > [!IMPORTANT]
@@ -333,11 +338,11 @@ An `AmbiguityPredictor` head classifies each RoI as EASY, MEDIUM, or HARD based 
 
 ```yaml
 early_exit:
-  enabled: true
-  easy_threshold: 0.2        # ambiguity < 0.2 → skip regions
-  hard_threshold: 0.7        # ambiguity ≥ 0.7 → all 9 regions
-  hidden_dim: 64              # predictor hidden size (~4.5K params)
-  loss_weight: 0.1            # BCE loss weight for training
+  enabled: true                         # toggle this module on/off
+  easy_threshold: 0.2                   # (required) ambiguity < 0.2 → skip regions
+  hard_threshold: 0.7                   # (required) ambiguity ≥ 0.7 → all 9 regions
+  hidden_dim: 64                        # (required) predictor hidden size (~4.5K params)
+  loss_weight: 0.1                      # (required) BCE loss weight for training
 ```
 
 **Expected effect:** 50–70% reduction in hypothesis region evaluations with < 0.5% AP₃D drop.
@@ -483,3 +488,11 @@ root_dir: '/path/to/kitti/training'
 3. For A1: ensure `warmup_epochs` has passed
 4. For C2: ensure depth prior `.npy` files exist
 5. For D1: the amb_loss should appear in training loss display
+
+### `KeyError` on startup
+
+**Symptom:** `KeyError: 'hidden_dim'` (or any enhancement config key).
+
+**Cause:** The config YAML is missing a required key. All enhancement keys are read via direct access (`cfg['key']`) with no in-code fallback defaults.
+
+**Fix:** Ensure your `lib/kitti.yaml` includes the full `enhancements` block. Compare against the shipped default config — every key must be present when its module is enabled. The easiest fix is to copy the entire `enhancements:` section from the default `kitti.yaml`.
