@@ -1,0 +1,81 @@
+dataset:
+  type: 'kitti' 
+  root_dir: '/your/data/path/KITTIDataset'
+  # eval_cls: ['Car']
+  eval_cls: ['Car', 'Pedestrian','Cyclist'] 
+  eval_dataset: 'kitti' 
+  batch_size: 16
+  num_workers: 8
+  class_merging: False
+  use_dontcare: False
+  use_3d_center: True
+  writelist: ['Car','Pedestrian','Cyclist']
+  random_flip: 0.5
+  random_crop: 0.5
+  scale: 0.4
+  shift: 0.1
+
+model:
+  type: 'MonoMH' 
+  backbone: 'dla34'
+  neck: 'DLAUp'
+
+optimizer:
+  type: 'adam'
+  lr: 0.00125
+  weight_decay: 0.00001
+
+lr_scheduler:
+  warmup: True  # 5 epoches, cosine warmup, init_lir=0.00001 in default
+  decay_rate: 0.1
+  decay_list: [120, 160] 
+
+trainer:
+  max_epoch: 200 #
+  eval_start: 10
+  eval_frequency: 10 # evaluation interval (in epoch)
+  save_frequency: 10 # checkpoint save interval (in epoch)
+  disp_frequency: 100 # display interval (in batch)
+
+tester:
+  tester_metrics: 'kitti'
+  threshold: 0.2  # confidence filter
+
+  out_dir: 
+  resume_model:  
+
+# === Enhancement Modules (all disabled by default for baseline reproduction) ===
+enhancements:
+  # A1: Prototype-Based Hypothesis Filtering (from MonoSAOD)
+  prototype_filter:
+    enabled: false
+    num_prototypes: 192       # max number of prototype centroids
+    members_per_proto: 512    # FIFO buffer size per prototype
+    similarity_threshold: 0.85  # min cosine sim to accept hypothesis
+    depth_reliability_threshold: 0.3  # min exp(-uncertainty) to accept
+    ema_alpha: 0.005          # EMA update rate for prototype centroids
+    feature_dim: 64           # DLA34 first_level output channels
+    warmup_epochs: 10         # epochs before prototype bank is used for filtering
+
+  # B2: Intrinsic-Conditioned Hypothesis Diversity (from MonoIA)
+  intrinsic_conditioner:
+    enabled: false
+    base_threshold: 0.75      # MonoMH default confidence threshold
+    modulation_range: 0.3     # max threshold shift (tau = base - range * scale)
+    hidden_dim: 32            # MLP hidden layer size
+
+  # C2: Depth Prior Warm-Start (from FF-VIO-Init)
+  depth_prior:
+    enabled: false
+    prior_dir: 'depth_prior'  # relative to data_dir (kitti/training/depth_prior/)
+    warmstart_epochs: 50      # linear decay period for prior loss
+    prior_loss_weight: 1.0    # initial weight of the prior loss term
+
+  # D1: Hypothesis Early Exit (novel)
+  early_exit:
+    enabled: false
+    easy_threshold: 0.2       # below this → 1 hypothesis (skip regions)
+    hard_threshold: 0.7       # above this → all 9 regions
+    hidden_dim: 64            # AmbiguityPredictor MLP hidden size
+    loss_weight: 0.1          # weight for ambiguity prediction loss
+

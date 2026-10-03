@@ -1,0 +1,35 @@
+0:
+  ap_results: {}
+  duration_seconds: 0
+  name: baseline
+  status: dry_run
+1:
+  ap_results: {}
+  duration_seconds: 0
+  name: A1_only
+  status: dry_run
+2:
+  ap_results: {}
+  duration_seconds: 0
+  name: B2_only
+  status: dry_run
+3:
+  ap_results: {}
+  duration_seconds: 0
+  name: C2_only
+  status: dry_run
+4:
+  ap_results: {}
+  duration_seconds: 0
+  name: D1_only
+  status: dry_run
+5:
+  ap_results: {}
+  duration_seconds: 0
+  name: A1_D1
+  status: dry_run
+6:
+  ap_results: {}
+  duration_seconds: 0
+  name: full
+  status: dry_run
