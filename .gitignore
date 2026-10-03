@@ -25,3 +25,4 @@ ENV/
 Thumbs.db
 
 *.log
+outputs/
