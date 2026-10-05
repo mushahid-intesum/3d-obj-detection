@@ -320,7 +320,10 @@ def dla34(pretrained=False, **kwargs):  # DLA-34
                 [16, 32, 64, 128, 256, 512],
                 block=BasicBlock, **kwargs)
     if pretrained:
-        pretrained_model_path = os.environ.get('DLA34_WEIGHTS', 'lib/backbones/dla34-ba72cf86.pth')
+        # pretrained_model_path = os.environ.get('DLA34_WEIGHTS', 'lib/backbones/dla34-ba72cf86.pth')
+
+        # Only for kaggle 
+        pretrained_model_path = os.environ.get('DLA34_WEIGHTS', '/kaggle/input/models/skondhodata/dla/pytorch/default/1/dla34-ba72cf86.pth')
         if not pretrained_model_path:
             model.load_pretrained_model(data='imagenet', name='dla34', hash='ba72cf86')
         else:
