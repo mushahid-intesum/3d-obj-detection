@@ -323,7 +323,11 @@ def dla34(pretrained=False, **kwargs):  # DLA-34
         # pretrained_model_path = os.environ.get('DLA34_WEIGHTS', 'lib/backbones/dla34-ba72cf86.pth')
 
         # Only for kaggle 
-        pretrained_model_path = os.environ.get('DLA34_WEIGHTS', '/kaggle/input/models/skondhodata/dla/pytorch/default/1/dla34-ba72cf86.pth')
+        # pretrained_model_path = os.environ.get('DLA34_WEIGHTS', '/kaggle/input/models/skondhodata/dla/pytorch/default/1/dla34-ba72cf86.pth')
+
+        # Kaggle D 
+        pretrained_model_path = os.environ.get('DLA34_WEIGHTS', '/kaggle/input/models/throwaway55/dla/pytorch/default/1/dla34-ba72cf86.pth')
+
         if not pretrained_model_path:
             model.load_pretrained_model(data='imagenet', name='dla34', hash='ba72cf86')
         else:
