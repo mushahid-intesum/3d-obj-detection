@@ -246,6 +246,9 @@ class SoftBoM_Loss(nn.Module):
                     (3, 7, 0, 4), (3, 7, 2, 6), (3, 7, 3, 7)
                 ]
                 amb_target = compute_ambiguity_targets(multi_vis_depth.detach(), regions)
+                # Guard: NaN depth → NaN variance → NaN target → BCE CUDA assert
+                amb_target = torch.nan_to_num(amb_target, nan=0.5).clamp(0.0, 1.0)
+                amb_pred = amb_pred.clamp(1e-7, 1.0 - 1e-7)  # avoid log(0)
                 amb_loss = F.binary_cross_entropy(amb_pred, amb_target.detach())
                 loss = loss + self.amb_loss_weight * amb_loss
                 self.stat['amb_loss'] = amb_loss
