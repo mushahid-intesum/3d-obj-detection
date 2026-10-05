@@ -288,8 +288,8 @@ class Trainer(object):
                         continue
                     total_loss += w * term
 
-            # Guard: skip backward if total_loss is NaN/Inf (prevents model weight corruption)
-            if torch.isnan(total_loss).any() or torch.isinf(total_loss).any():
+            # Guard: skip backward if total_loss is NaN/Inf or has no gradient
+            if torch.isnan(total_loss).any() or torch.isinf(total_loss).any() or not total_loss.requires_grad:
                 self.optimizer.zero_grad()
                 continue
 
