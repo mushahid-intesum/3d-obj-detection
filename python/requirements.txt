@@ -4,3 +4,6 @@ Pillow
 scipy
 matplotlib
 torch
+onnx
+onnx-tf
+tensorflow
