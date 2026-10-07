@@ -162,8 +162,8 @@ void app_main(void)
         ESP_ERROR_CHECK(camera_init_rgb());
 
         ESP_LOGI(TAG, "Starting autonomous navigation...");
-        ESP_LOGI(TAG, "Press GOAL button to capture target, then robot navigates.");
-        navigator_start(NAV_GOAL_FROM_BUTTON);
+        ESP_LOGI(TAG, "Goal image will be captured in 3 seconds.");
+        navigator_start(NAV_GOAL_AUTO_CAPTURE);
         break;
     }
 }

@@ -9,6 +9,10 @@
 #include "esp_err.h"
 #include "correlation.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /** TFLite Micro arena size for inference scratch memory. */
 #define TFLITE_ARENA_SIZE   (80 * 1024)   /* 80 KB */
 
@@ -50,5 +54,9 @@ esp_err_t inference_run_policy(const int8_t *corr_cue, int8_t *action_logits);
  * @brief Find the index of the maximum value in an int8 array.
  */
 int inference_argmax_i8(const int8_t *arr, int len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* INFERENCE_H */

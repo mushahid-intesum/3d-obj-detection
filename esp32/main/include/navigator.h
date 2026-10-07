@@ -10,7 +10,7 @@
 
 /** Navigation mode: how goal image is obtained. */
 typedef enum {
-    NAV_GOAL_FROM_BUTTON,   /**< Capture current frame as goal on button press. */
+    NAV_GOAL_AUTO_CAPTURE,  /**< Capture current frame as goal immediately. */
     NAV_GOAL_FROM_FLASH,    /**< Load pre-stored goal from flash. */
 } nav_goal_mode_t;
 

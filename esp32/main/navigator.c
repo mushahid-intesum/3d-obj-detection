@@ -20,7 +20,6 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "driver/gpio.h"
 
 #include <string.h>
 
@@ -33,25 +32,12 @@ static int8_t s_goal_features[CORR_FEAT_SIZE];
 static uint8_t s_img_buf[IMG_TARGET_SIZE];
 
 /**
- * @brief Wait for the goal button to be pressed, then capture goal image.
+ * @brief Capture current frame as goal image (auto, no button).
  */
-static esp_err_t capture_goal_on_button(void)
+static esp_err_t capture_goal_auto(void)
 {
-    gpio_config_t btn_conf = {
-        .pin_bit_mask = (1ULL << BTN_GOAL_PIN),
-        .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&btn_conf);
-
-    ESP_LOGI(TAG, "Press GOAL button to capture target image...");
-
-    while (gpio_get_level(BTN_GOAL_PIN) == 1) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    vTaskDelay(pdMS_TO_TICKS(200));
+    ESP_LOGI(TAG, "Capturing goal image in 3 seconds...");
+    vTaskDelay(pdMS_TO_TICKS(3000));
 
     /* Capture RGB frame and downsample */
     camera_fb_t *fb = camera_capture_frame();
@@ -103,8 +89,8 @@ static void navigation_task(void *pvParam)
 
     /* Obtain goal */
     switch (mode) {
-    case NAV_GOAL_FROM_BUTTON:
-        err = capture_goal_on_button();
+    case NAV_GOAL_AUTO_CAPTURE:
+        err = capture_goal_auto();
         break;
     case NAV_GOAL_FROM_FLASH:
         ESP_LOGE(TAG, "Flash goal not implemented yet");
