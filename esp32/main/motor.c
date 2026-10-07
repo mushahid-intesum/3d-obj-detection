@@ -28,10 +28,10 @@ static const char *TAG = "motor";
 
 static void set_speed(uint32_t speed)
 {
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, speed);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, speed);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, speed);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, speed);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
 }
 
 /* ── Public API ── */
@@ -53,7 +53,7 @@ esp_err_t motor_init(void)
     ledc_timer_config_t timer = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
         .duty_resolution = (ledc_timer_bit_t)MOTOR_PWM_BITS,
-        .timer_num       = LEDC_TIMER_0,
+        .timer_num       = LEDC_TIMER_1,
         .freq_hz         = MOTOR_PWM_FREQ_HZ,
         .clk_cfg         = LEDC_AUTO_CLK,
     };
@@ -63,8 +63,8 @@ esp_err_t motor_init(void)
     ledc_channel_config_t ch_a = {
         .gpio_num   = MOTOR_ENA,
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel    = LEDC_CHANNEL_0,
-        .timer_sel  = LEDC_TIMER_0,
+        .channel    = LEDC_CHANNEL_2,
+        .timer_sel  = LEDC_TIMER_1,
         .duty       = 0,
         .hpoint     = 0,
     };
@@ -74,8 +74,8 @@ esp_err_t motor_init(void)
     ledc_channel_config_t ch_b = {
         .gpio_num   = MOTOR_ENB,
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel    = LEDC_CHANNEL_1,
-        .timer_sel  = LEDC_TIMER_0,
+        .channel    = LEDC_CHANNEL_3,
+        .timer_sel  = LEDC_TIMER_1,
         .duty       = 0,
         .hpoint     = 0,
     };

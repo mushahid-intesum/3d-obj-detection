@@ -2,23 +2,22 @@
  * @file config.h
  * @brief Unified hardware configuration for MCU ImageNav robot.
  *
- * Pure constants — no driver includes. Each .c file includes its own
- * driver headers. Pin numbers are plain integers.
- *
  * Pin assignments based on:
- *   - Freenove ESP32-S3 WROOM pinout
- *   - espressif/esp32-camera BOARD_ESP32S3_WROOM reference
+ *   - Freenove ESP32-S3 WROOM board pinout
+ *   - espressif/esp32-camera library reference
+ *
+ * Camera: OV3660 via board camera connector (PWDN not used on Freenove)
  */
 #ifndef CONFIG_H
 #define CONFIG_H
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  OV3660 Camera (Freenove ESP32-S3 WROOM)
+ *  OV3660 Camera — Freenove ESP32-S3 WROOM
  *
- *  From: espressif/esp32-camera camera_pinout.h  BOARD_ESP32S3_WROOM
- *  PWDN = GPIO38 — MUST be driven LOW to wake the camera.
+ *  Freenove board does NOT use PWDN/RESET — both set to -1.
+ *  Pin mapping verified against Freenove schematics and esp32-camera lib.
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define CAM_PIN_PWDN    38             /* Power-down (active HIGH) */
+#define CAM_PIN_PWDN    (-1)           /* Not used on Freenove     */
 #define CAM_PIN_RESET   (-1)           /* Software reset           */
 #define CAM_PIN_XCLK    15
 #define CAM_PIN_SIOD    4              /* I2C SDA (SCCB)           */
@@ -35,8 +34,8 @@
 #define CAM_PIN_HREF    7
 #define CAM_PIN_PCLK    13
 
-#define CAM_XCLK_FREQ   20000000     /* 20 MHz (OV3660 needs ≥20) */
-#define CAM_FB_COUNT     2           /* double-buffer DMA        */
+#define CAM_XCLK_FREQ   20000000     /* 20 MHz                   */
+#define CAM_FB_COUNT     1           /* single buffer for safety  */
 #define CAM_JPEG_QUALITY 12          /* 0-63, lower = better     */
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -45,15 +44,14 @@
  *  Motor A (left):  IN1/IN2 direction, ENA speed (PWM)
  *  Motor B (right): IN3/IN4 direction, ENB speed (PWM)
  *
- *  GPIO38 is now used by camera PWDN, so motors moved to:
- *    Free GPIOs: 14, 21, 47, 48, 35, 36, 37, 39, 40
+ *  Avoids: camera pins (4-13, 15-18), UART (43-44), flash LED (2)
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define MOTOR_IN1       35             /* Motor A direction 1      */
 #define MOTOR_IN2       36             /* Motor A direction 2      */
 #define MOTOR_IN3       37             /* Motor B direction 1      */
-#define MOTOR_IN4       14             /* Motor B direction 2      */
-#define MOTOR_ENA       21             /* Motor A PWM enable       */
-#define MOTOR_ENB       47             /* Motor B PWM enable       */
+#define MOTOR_IN4       38             /* Motor B direction 2      */
+#define MOTOR_ENA       39             /* Motor A PWM enable       */
+#define MOTOR_ENB       40             /* Motor B PWM enable       */
 
 /* PWM config */
 #define MOTOR_PWM_FREQ_HZ  1000
@@ -66,9 +64,10 @@
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  HC-SR04 Ultrasonic Sensor
+ *  Note: GPIO2 is the Freenove flash LED — use GPIO3 instead for echo.
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define US_TRIG_PIN     1              /* Trigger pulse            */
-#define US_ECHO_PIN     2              /* Echo response            */
+#define US_ECHO_PIN     3              /* Echo response            */
 #define US_TIMEOUT_US   25000          /* Max echo wait (~4m)      */
 #define US_POLL_MS      100            /* Polling interval (10 Hz) */
 #define US_OBSTACLE_CM  12             /* Safety override threshold*/
