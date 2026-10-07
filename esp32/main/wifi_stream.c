@@ -19,12 +19,12 @@
 
 static const char *TAG = "wifi_stream";
 
-/* WiFi credentials — set via menuconfig or override here */
+/* !! SET YOUR WIFI CREDENTIALS HERE !! */
 #ifndef CONFIG_WIFI_SSID
-#define CONFIG_WIFI_SSID     "YOUR_SSID"
+#define CONFIG_WIFI_SSID     "YOUR_SSID"      /* <-- CHANGE THIS */
 #endif
 #ifndef CONFIG_WIFI_PASSWORD
-#define CONFIG_WIFI_PASSWORD "YOUR_PASS"
+#define CONFIG_WIFI_PASSWORD "YOUR_PASS"       /* <-- CHANGE THIS */
 #endif
 
 /* Event group for WiFi connection state */
@@ -90,7 +90,8 @@ esp_err_t wifi_init_sta(void)
     ESP_LOGI(TAG, "Connecting to SSID: %s ...", CONFIG_WIFI_SSID);
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
+        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
+        pdMS_TO_TICKS(30000));  /* 30 sec timeout */
 
     if (bits & WIFI_CONNECTED_BIT) {
         return ESP_OK;
