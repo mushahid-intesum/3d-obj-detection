@@ -4,18 +4,25 @@
  *
  * Pure constants — no driver includes. Each .c file includes its own
  * driver headers. Pin numbers are plain integers.
+ *
+ * Pin assignments based on:
+ *   - Freenove ESP32-S3 WROOM pinout
+ *   - espressif/esp32-camera BOARD_ESP32S3_WROOM reference
  */
 #ifndef CONFIG_H
 #define CONFIG_H
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  OV3660 Camera on ESP32-S3-WROOM (24-pin, 160° wide-angle fisheye)
+ *  OV3660 Camera (Freenove ESP32-S3 WROOM)
+ *
+ *  From: espressif/esp32-camera camera_pinout.h  BOARD_ESP32S3_WROOM
+ *  PWDN = GPIO38 — MUST be driven LOW to wake the camera.
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define CAM_PIN_PWDN    (-1)
-#define CAM_PIN_RESET   (-1)
+#define CAM_PIN_PWDN    38             /* Power-down (active HIGH) */
+#define CAM_PIN_RESET   (-1)           /* Software reset           */
 #define CAM_PIN_XCLK    15
-#define CAM_PIN_SIOD    4              /* I2C SDA                  */
-#define CAM_PIN_SIOC    5              /* I2C SCL                  */
+#define CAM_PIN_SIOD    4              /* I2C SDA (SCCB)           */
+#define CAM_PIN_SIOC    5              /* I2C SCL (SCCB)           */
 #define CAM_PIN_D7      16
 #define CAM_PIN_D6      17
 #define CAM_PIN_D5      18
@@ -30,20 +37,23 @@
 
 #define CAM_XCLK_FREQ   20000000     /* 20 MHz (OV3660 needs ≥20) */
 #define CAM_FB_COUNT     2           /* double-buffer DMA        */
-#define CAM_JPEG_QUALITY 15          /* 0-63, lower = better     */
+#define CAM_JPEG_QUALITY 12          /* 0-63, lower = better     */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  DRV8833 Motor Driver
  *
  *  Motor A (left):  IN1/IN2 direction, ENA speed (PWM)
  *  Motor B (right): IN3/IN4 direction, ENB speed (PWM)
+ *
+ *  GPIO38 is now used by camera PWDN, so motors moved to:
+ *    Free GPIOs: 14, 21, 47, 48, 35, 36, 37, 39, 40
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define MOTOR_IN1       35             /* Motor A direction 1      */
 #define MOTOR_IN2       36             /* Motor A direction 2      */
 #define MOTOR_IN3       37             /* Motor B direction 1      */
-#define MOTOR_IN4       38             /* Motor B direction 2      */
-#define MOTOR_ENA       39             /* Motor A PWM enable       */
-#define MOTOR_ENB       40             /* Motor B PWM enable       */
+#define MOTOR_IN4       14             /* Motor B direction 2      */
+#define MOTOR_ENA       21             /* Motor A PWM enable       */
+#define MOTOR_ENB       47             /* Motor B PWM enable       */
 
 /* PWM config */
 #define MOTOR_PWM_FREQ_HZ  1000
@@ -56,7 +66,6 @@
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  HC-SR04 Ultrasonic Sensor
- *  Free GPIOs: 1, 2, 3, 14, 19-21, 41-42, 45-48
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define US_TRIG_PIN     1              /* Trigger pulse            */
 #define US_ECHO_PIN     2              /* Echo response            */
