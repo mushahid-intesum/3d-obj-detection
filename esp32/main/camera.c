@@ -1,16 +1,17 @@
 /**
  * @file camera.c
- * @brief OV3660 camera driver implementation using esp32-camera component.
+ * @brief OV3660 camera driver with JPEG and RGB565 modes.
  */
 #include "camera.h"
-#include "pin_config.h"
-#include "esp_camera.h"
+#include "config.h"
 #include "esp_log.h"
 
 static const char *TAG = "camera";
-static camera_fb_t *s_current_fb = NULL;
 
-esp_err_t camera_init(void)
+/**
+ * @brief Internal init with selectable pixel format.
+ */
+static esp_err_t camera_init_common(pixformat_t format)
 {
     camera_config_t config = {
         .pin_pwdn     = CAM_PIN_PWDN,
@@ -30,16 +31,16 @@ esp_err_t camera_init(void)
         .pin_href     = CAM_PIN_HREF,
         .pin_pclk     = CAM_PIN_PCLK,
 
-        .xclk_freq_hz = 20000000,          /* 20 MHz XCLK */
-        .ledc_timer   = LEDC_TIMER_0,
-        .ledc_channel = LEDC_CHANNEL_2,    /* avoid collision with motor PWM */
-
-        .pixel_format = PIXFORMAT_RGB565,
-        .frame_size   = FRAMESIZE_QVGA,    /* 320x240 */
-        .jpeg_quality = 12,                /* unused for RGB565 */
-        .fb_count     = 2,                 /* double-buffer DMA */
-        .fb_location  = CAMERA_FB_IN_PSRAM,
-        .grab_mode    = CAMERA_GRAB_LATEST,
+        .xclk_freq_hz  = CAM_XCLK_FREQ,
+        .ledc_timer    = LEDC_TIMER_1,      /* timer 0 used by motors */
+        .ledc_channel  = LEDC_CHANNEL_2,    /* channels 0,1 used by motors */
+        .pixel_format  = format,
+        .frame_size    = FRAMESIZE_QVGA,    /* 320×240 */
+        .jpeg_quality  = CAM_JPEG_QUALITY,
+        .fb_count      = CAM_FB_COUNT,
+        .fb_location   = CAMERA_FB_IN_PSRAM,
+        .grab_mode     = CAMERA_GRAB_LATEST,
+        .sccb_i2c_port = -1,
     };
 
     esp_err_t err = esp_camera_init(&config);
@@ -48,50 +49,42 @@ esp_err_t camera_init(void)
         return err;
     }
 
-    /* OV3660-specific: adjust for 160° fisheye lens */
+    /* Sensor tuning for 160° fisheye */
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
         s->set_brightness(s, 0);
         s->set_contrast(s, 0);
         s->set_saturation(s, 0);
-        s->set_whitebal(s, 1);      /* auto white balance */
+        s->set_whitebal(s, 1);
         s->set_awb_gain(s, 1);
-        s->set_exposure_ctrl(s, 1); /* auto exposure */
-        s->set_aec2(s, 1);         /* AEC DSP */
-        s->set_gain_ctrl(s, 1);    /* auto gain */
-        ESP_LOGI(TAG, "OV3660 sensor configured");
+        s->set_exposure_ctrl(s, 1);
+        s->set_aec2(s, 1);
+        s->set_gain_ctrl(s, 1);
     }
 
-    ESP_LOGI(TAG, "Camera initialized: 320x240 RGB565, 160° FOV");
+    const char *fmt_str = (format == PIXFORMAT_JPEG) ? "JPEG" : "RGB565";
+    ESP_LOGI(TAG, "Camera initialized (QVGA %s, 160° fisheye)", fmt_str);
     return ESP_OK;
 }
 
-esp_err_t camera_capture(uint8_t **buf, int *width, int *height, size_t *len)
+esp_err_t camera_init_jpeg(void)
 {
-    /* Release previous frame if held */
-    if (s_current_fb) {
-        esp_camera_fb_return(s_current_fb);
-        s_current_fb = NULL;
-    }
-
-    s_current_fb = esp_camera_fb_get();
-    if (!s_current_fb) {
-        ESP_LOGE(TAG, "Frame capture failed");
-        return ESP_FAIL;
-    }
-
-    *buf    = s_current_fb->buf;
-    *width  = s_current_fb->width;
-    *height = s_current_fb->height;
-    *len    = s_current_fb->len;
-
-    return ESP_OK;
+    return camera_init_common(PIXFORMAT_JPEG);
 }
 
-void camera_fb_release(void)
+esp_err_t camera_init_rgb(void)
 {
-    if (s_current_fb) {
-        esp_camera_fb_return(s_current_fb);
-        s_current_fb = NULL;
+    return camera_init_common(PIXFORMAT_RGB565);
+}
+
+camera_fb_t *camera_capture_frame(void)
+{
+    return esp_camera_fb_get();
+}
+
+void camera_release_frame(camera_fb_t *fb)
+{
+    if (fb) {
+        esp_camera_fb_return(fb);
     }
 }

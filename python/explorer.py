@@ -33,9 +33,9 @@ OBSTACLE_THRESH_CM  = 12                    # ultrasonic override threshold
 MAGIC = 0x494D4731
 HEADER_SIZE = 11
 IMG_W, IMG_H, IMG_CH = 48, 48, 3
-IMG_SIZE = IMG_W * IMG_H * IMG_CH
-PACKET_SIZE = HEADER_SIZE + IMG_SIZE
 
+# Actions: pink noise generates 0=forward, 1=left, 2=right
+# Mapped to firmware commands: F=NORTH, B=SOUTH, L=WEST, R=EAST, S=STAY
 ACTION_TO_CMD = {0: b'F', 1: b'L', 2: b'R', 3: b'S'}
 ACTION_NAMES = {0: "FWD", 1: "LFT", 2: "RGT", 3: "STP"}
 
@@ -59,14 +59,20 @@ def recv_exact(sock, nbytes):
 
 
 def receive_frame(sock):
-    raw = recv_exact(sock, PACKET_SIZE)
-    magic = struct.unpack_from('<I', raw, 0)[0]
+    """Receive one frame. Handles both JPEG and raw RGB protocols."""
+    header = recv_exact(sock, HEADER_SIZE)
+    magic = struct.unpack_from('<I', header, 0)[0]
     if magic != MAGIC:
         raise ValueError(f"Bad magic: 0x{magic:08X}")
-    frame_id = struct.unpack_from('<I', raw, 4)[0]
-    ultrasonic_cm = struct.unpack_from('<H', raw, 8)[0]
-    last_action = raw[10]
-    image = np.frombuffer(raw[HEADER_SIZE:], dtype=np.uint8).reshape(IMG_H, IMG_W, IMG_CH)
+    frame_id = struct.unpack_from('<I', header, 4)[0]
+    ultrasonic_cm = struct.unpack_from('<H', header, 8)[0]
+    last_action = header[10]
+
+    # Read image data — try JPEG (variable len) or fixed RGB
+    # The firmware sends raw RGB888 (48x48x3 = 6912 bytes) for collection
+    img_size = IMG_W * IMG_H * IMG_CH
+    img_data = recv_exact(sock, img_size)
+    image = np.frombuffer(img_data, dtype=np.uint8).reshape(IMG_H, IMG_W, IMG_CH)
     return frame_id, image, ultrasonic_cm, last_action
 
 

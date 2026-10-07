@@ -14,7 +14,7 @@
 #include "image_proc.h"
 #include "ultrasonic.h"
 #include "motor.h"
-#include "pin_config.h"
+#include "config.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -37,7 +37,6 @@ static uint8_t s_img_buf[IMG_TARGET_SIZE];
  */
 static esp_err_t capture_goal_on_button(void)
 {
-    /* Configure button pin with pull-up */
     gpio_config_t btn_conf = {
         .pin_bit_mask = (1ULL << BTN_GOAL_PIN),
         .mode         = GPIO_MODE_INPUT,
@@ -49,29 +48,41 @@ static esp_err_t capture_goal_on_button(void)
 
     ESP_LOGI(TAG, "Press GOAL button to capture target image...");
 
-    /* Wait for button press (active LOW) */
     while (gpio_get_level(BTN_GOAL_PIN) == 1) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    /* Debounce */
     vTaskDelay(pdMS_TO_TICKS(200));
 
-    /* Capture and downsample */
-    uint8_t *raw = NULL;
-    int w, h;
-    size_t len;
-    esp_err_t err = camera_capture(&raw, &w, &h, &len);
-    if (err != ESP_OK) return err;
+    /* Capture RGB frame and downsample */
+    camera_fb_t *fb = camera_capture_frame();
+    if (!fb) return ESP_FAIL;
 
-    image_downsample(raw, w, h, s_img_buf);
-    camera_fb_release();
+    image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
+    camera_release_frame(fb);
 
     /* Encode goal */
-    err = inference_run_encoder(s_img_buf, s_goal_features);
+    esp_err_t err = inference_run_encoder(s_img_buf, s_goal_features);
     if (err != ESP_OK) return err;
 
     ESP_LOGI(TAG, "Goal image captured and encoded!");
     return ESP_OK;
+}
+
+/**
+ * @brief Map policy output (0-3) to robot action IDs from config.h.
+ *
+ * Policy outputs: 0=forward, 1=left, 2=right, 3=stop
+ * Robot actions:  NORTH, WEST, EAST, STAY
+ */
+static uint8_t policy_to_action(int policy_idx)
+{
+    switch (policy_idx) {
+    case 0: return ACTION_NORTH;
+    case 1: return ACTION_WEST;
+    case 2: return ACTION_EAST;
+    case 3: return ACTION_STAY;
+    default: return ACTION_STAY;
+    }
 }
 
 /**
@@ -81,7 +92,7 @@ static void navigation_task(void *pvParam)
 {
     nav_goal_mode_t mode = (nav_goal_mode_t)(uintptr_t)pvParam;
 
-    /* ── Initialize inference engine ── */
+    /* Initialize inference engine */
     esp_err_t err = inference_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Inference init failed: 0x%x", err);
@@ -90,13 +101,12 @@ static void navigation_task(void *pvParam)
         return;
     }
 
-    /* ── Obtain goal ── */
+    /* Obtain goal */
     switch (mode) {
     case NAV_GOAL_FROM_BUTTON:
         err = capture_goal_on_button();
         break;
     case NAV_GOAL_FROM_FLASH:
-        /* TODO: load goal image from flash partition */
         ESP_LOGE(TAG, "Flash goal not implemented yet");
         err = ESP_ERR_NOT_SUPPORTED;
         break;
@@ -108,11 +118,10 @@ static void navigation_task(void *pvParam)
         return;
     }
 
-    /* ── Navigation loop ── */
+    /* Navigation loop */
     ESP_LOGI(TAG, "Starting navigation (max %d steps, %d Hz)...",
              NAV_MAX_STEPS, NAV_RATE_HZ);
 
-    const TickType_t step_delay = pdMS_TO_TICKS(1000 / NAV_RATE_HZ);
     int8_t obs_features[CORR_FEAT_SIZE];
     int8_t corr_cue[CORR_CUE_SIZE];
     int8_t action_logits[4];
@@ -124,16 +133,14 @@ static void navigation_task(void *pvParam)
         int64_t t_start = esp_timer_get_time();
 
         /* 1. Capture and downsample */
-        uint8_t *raw = NULL;
-        int w, h;
-        size_t len;
-        if (camera_capture(&raw, &w, &h, &len) != ESP_OK) {
+        camera_fb_t *fb = camera_capture_frame();
+        if (!fb) {
             ESP_LOGW(TAG, "Frame capture failed, retrying...");
-            vTaskDelay(step_delay);
+            vTaskDelay(pdMS_TO_TICKS(1000 / NAV_RATE_HZ));
             continue;
         }
-        image_downsample(raw, w, h, s_img_buf);
-        camera_fb_release();
+        image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
+        camera_release_frame(fb);
 
         /* 2. Encode observation */
         if (inference_run_encoder(s_img_buf, obs_features) != ESP_OK) {
@@ -149,20 +156,21 @@ static void navigation_task(void *pvParam)
             ESP_LOGE(TAG, "Policy inference failed");
             break;
         }
-        int action = inference_argmax_i8(action_logits, 4);
+        int policy_idx = inference_argmax_i8(action_logits, 4);
+        uint8_t action = policy_to_action(policy_idx);
 
         /* 5. Safety override */
         uint16_t dist = ultrasonic_get_cached_cm();
-        if (action == ACTION_FORWARD && dist < NAV_OBSTACLE_CM) {
-            ESP_LOGW(TAG, "Obstacle at %u cm — overriding to TURN_RIGHT", dist);
-            action = ACTION_TURN_RIGHT;
+        if (action == ACTION_NORTH && dist < US_OBSTACLE_CM) {
+            ESP_LOGW(TAG, "Obstacle at %u cm — overriding to EAST", dist);
+            action = ACTION_EAST;
         }
 
         /* 6. Execute */
-        motor_execute_action(action, 150);
+        motor_execute_action(action);
 
         /* 7. Check termination */
-        if (action == ACTION_STOP) {
+        if (action == ACTION_STAY) {
             done = true;
         }
 
@@ -170,7 +178,7 @@ static void navigation_task(void *pvParam)
         int64_t t_elapsed_us = esp_timer_get_time() - t_start;
 
         if (step % 10 == 0) {
-            const char *action_names[] = {"FWD", "LFT", "RGT", "STP"};
+            const char *action_names[] = {"N", "S", "E", "W", "STAY", "INT"};
             ESP_LOGI(TAG, "Step %3d: action=%s dist=%ucm logits=[%d,%d,%d,%d] %lldms",
                      step, action_names[action], dist,
                      action_logits[0], action_logits[1],
@@ -187,12 +195,11 @@ static void navigation_task(void *pvParam)
         }
     }
 
-    /* ── Episode complete ── */
     motor_stop();
     ESP_LOGI(TAG, "═══════════════════════════════════");
     ESP_LOGI(TAG, "  Navigation complete!");
     ESP_LOGI(TAG, "  Steps: %d / %d", step, NAV_MAX_STEPS);
-    ESP_LOGI(TAG, "  Stopped: %s", done ? "policy STOP action" : "max steps reached");
+    ESP_LOGI(TAG, "  Stopped: %s", done ? "policy STAY" : "max steps");
     ESP_LOGI(TAG, "═══════════════════════════════════");
 
     vTaskDelete(NULL);
@@ -202,11 +209,9 @@ esp_err_t navigator_start(nav_goal_mode_t mode)
 {
     BaseType_t ret = xTaskCreatePinnedToCore(
         navigation_task, "navigator",
-        16384,                              /* 16KB stack (TFLite needs headroom) */
+        16384,
         (void *)(uintptr_t)mode,
-        5,                                  /* priority: medium-high */
-        NULL,
-        1                                   /* core 1 */
+        5, NULL, 1
     );
 
     if (ret != pdPASS) {

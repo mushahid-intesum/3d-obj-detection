@@ -8,15 +8,6 @@
 #include "esp_err.h"
 #include <stdint.h>
 
-/** Maximum steps per navigation episode. */
-#define NAV_MAX_STEPS       200
-
-/** Ultrasonic safety threshold in cm. */
-#define NAV_OBSTACLE_CM     12
-
-/** Navigation loop rate (Hz). */
-#define NAV_RATE_HZ         5
-
 /** Navigation mode: how goal image is obtained. */
 typedef enum {
     NAV_GOAL_FROM_BUTTON,   /**< Capture current frame as goal on button press. */

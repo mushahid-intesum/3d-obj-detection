@@ -1,148 +1,141 @@
 /**
  * @file motor.c
- * @brief Differential-drive motor control using LEDC PWM.
+ * @brief DRV8833 motor driver using LEDC PWM on ESP32-S3.
+ *
+ * Motor A (left):  IN1/IN2 direction, ENA speed
+ * Motor B (right): IN3/IN4 direction, ENB speed
+ *
+ * Actions:
+ *   0 NORTH:    both forward
+ *   1 SOUTH:    both reverse
+ *   2 EAST:     pivot right (left fwd, right rev)
+ *   3 WEST:     pivot left  (left rev, right fwd)
+ *   4 STAY:     stop
+ *   5 INTERACT: stop (server handles game logic)
  */
 #include "motor.h"
-#include "pin_config.h"
-#include "driver/ledc.h"
+#include "config.h"
+
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "motor";
 
-/** Duration (ms) for a single forward step (~0.25m at moderate speed). */
-#define FORWARD_DURATION_MS   200
+/* ── PWM channels ── */
 
-/** Duration (ms) for a single turn step (~30° at moderate speed). */
-#define TURN_DURATION_MS      300
-
-/**
- * @brief Configure direction GPIOs for one motor.
- */
-static void setup_dir_pins(gpio_num_t in1, gpio_num_t in2)
+static void set_speed(uint32_t speed)
 {
-    gpio_config_t conf = {
-        .pin_bit_mask = (1ULL << in1) | (1ULL << in2),
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, speed);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, speed);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+}
+
+/* ── Public API ── */
+
+esp_err_t motor_init(void)
+{
+    /* Configure direction GPIOs */
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << MOTOR_IN1) | (1ULL << MOTOR_IN2) |
+                        (1ULL << MOTOR_IN3) | (1ULL << MOTOR_IN4),
         .mode         = GPIO_MODE_OUTPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
-    gpio_config(&conf);
-    gpio_set_level(in1, 0);
-    gpio_set_level(in2, 0);
-}
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
 
-esp_err_t motor_init(void)
-{
-    /* Direction pins */
-    setup_dir_pins(MOTOR_L_IN1, MOTOR_L_IN2);
-    setup_dir_pins(MOTOR_R_IN1, MOTOR_R_IN2);
-
-    /* LEDC timer (shared by both channels) */
-    ledc_timer_config_t timer_conf = {
+    /* LEDC timer */
+    ledc_timer_config_t timer = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
-        .timer_num       = LEDC_TIMER_1,
-        .duty_resolution = MOTOR_PWM_RESOLUTION,
-        .freq_hz         = MOTOR_PWM_FREQ_HZ,
+        .duty_resolution = LEDC_RESOLUTION,
+        .timer_num       = LEDC_TIMER_0,
+        .freq_hz         = LEDC_FREQ_HZ,
         .clk_cfg         = LEDC_AUTO_CLK,
     };
-    ledc_timer_config(&timer_conf);
+    ESP_ERROR_CHECK(ledc_timer_config(&timer));
 
-    /* Left motor PWM channel */
-    ledc_channel_config_t left_ch = {
+    /* Channel A (left motor) */
+    ledc_channel_config_t ch_a = {
+        .gpio_num   = MOTOR_ENA,
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel    = MOTOR_L_LEDC_CH,
-        .timer_sel  = LEDC_TIMER_1,
-        .gpio_num   = MOTOR_L_PWM,
+        .channel    = LEDC_CHANNEL_0,
+        .timer_sel  = LEDC_TIMER_0,
         .duty       = 0,
         .hpoint     = 0,
     };
-    ledc_channel_config(&left_ch);
+    ESP_ERROR_CHECK(ledc_channel_config(&ch_a));
 
-    /* Right motor PWM channel */
-    ledc_channel_config_t right_ch = {
+    /* Channel B (right motor) */
+    ledc_channel_config_t ch_b = {
+        .gpio_num   = MOTOR_ENB,
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel    = MOTOR_R_LEDC_CH,
-        .timer_sel  = LEDC_TIMER_1,
-        .gpio_num   = MOTOR_R_PWM,
+        .channel    = LEDC_CHANNEL_1,
+        .timer_sel  = LEDC_TIMER_0,
         .duty       = 0,
         .hpoint     = 0,
     };
-    ledc_channel_config(&right_ch);
+    ESP_ERROR_CHECK(ledc_channel_config(&ch_b));
 
-    ESP_LOGI(TAG, "Motors initialized (PWM: %d Hz)", MOTOR_PWM_FREQ_HZ);
+    motor_stop();
+    ESP_LOGI(TAG, "Motor driver initialized (DRV8833)");
     return ESP_OK;
-}
-
-/**
- * @brief Set motor direction and speed.
- */
-static void set_motor(gpio_num_t in1, gpio_num_t in2,
-                      ledc_channel_t ch, int dir, uint8_t speed)
-{
-    if (dir > 0) {
-        gpio_set_level(in1, 1);
-        gpio_set_level(in2, 0);
-    } else if (dir < 0) {
-        gpio_set_level(in1, 0);
-        gpio_set_level(in2, 1);
-    } else {
-        gpio_set_level(in1, 0);
-        gpio_set_level(in2, 0);
-    }
-
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, ch, speed);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, ch);
-}
-
-void motor_forward(uint8_t speed)
-{
-    set_motor(MOTOR_L_IN1, MOTOR_L_IN2, MOTOR_L_LEDC_CH, +1, speed);
-    set_motor(MOTOR_R_IN1, MOTOR_R_IN2, MOTOR_R_LEDC_CH, +1, speed);
-}
-
-void motor_turn_left(uint8_t speed)
-{
-    set_motor(MOTOR_L_IN1, MOTOR_L_IN2, MOTOR_L_LEDC_CH, -1, speed);
-    set_motor(MOTOR_R_IN1, MOTOR_R_IN2, MOTOR_R_LEDC_CH, +1, speed);
-}
-
-void motor_turn_right(uint8_t speed)
-{
-    set_motor(MOTOR_L_IN1, MOTOR_L_IN2, MOTOR_L_LEDC_CH, +1, speed);
-    set_motor(MOTOR_R_IN1, MOTOR_R_IN2, MOTOR_R_LEDC_CH, -1, speed);
 }
 
 void motor_stop(void)
 {
-    set_motor(MOTOR_L_IN1, MOTOR_L_IN2, MOTOR_L_LEDC_CH, 0, 0);
-    set_motor(MOTOR_R_IN1, MOTOR_R_IN2, MOTOR_R_LEDC_CH, 0, 0);
+    set_speed(0);
 }
 
-void motor_execute_action(int action, uint8_t speed)
+void motor_forward(uint32_t duration_ms)
 {
-    switch (action) {
-    case ACTION_FORWARD:
-        motor_forward(speed);
-        vTaskDelay(pdMS_TO_TICKS(FORWARD_DURATION_MS));
-        motor_stop();
-        break;
-    case ACTION_TURN_LEFT:
-        motor_turn_left(speed);
-        vTaskDelay(pdMS_TO_TICKS(TURN_DURATION_MS));
-        motor_stop();
-        break;
-    case ACTION_TURN_RIGHT:
-        motor_turn_right(speed);
-        vTaskDelay(pdMS_TO_TICKS(TURN_DURATION_MS));
-        motor_stop();
-        break;
-    case ACTION_STOP:
-    default:
-        motor_stop();
-        break;
+    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);
+    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);
+    set_speed(MOTOR_SPEED);
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    motor_stop();
+}
+
+void motor_reverse(uint32_t duration_ms)
+{
+    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);
+    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);
+    set_speed(MOTOR_SPEED);
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    motor_stop();
+}
+
+void motor_turn_right(uint32_t duration_ms)
+{
+    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);  /* left fwd  */
+    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);  /* right rev */
+    set_speed(MOTOR_SPEED);
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    motor_stop();
+}
+
+void motor_turn_left(uint32_t duration_ms)
+{
+    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  /* left rev  */
+    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  /* right fwd */
+    set_speed(MOTOR_SPEED);
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    motor_stop();
+}
+
+void motor_execute_action(uint8_t action_id)
+{
+    switch (action_id) {
+        case ACTION_NORTH:    ESP_LOGI(TAG, "NORTH");    motor_forward(FORWARD_MS);    break;
+        case ACTION_SOUTH:    ESP_LOGI(TAG, "SOUTH");    motor_reverse(FORWARD_MS);    break;
+        case ACTION_EAST:     ESP_LOGI(TAG, "EAST");     motor_turn_right(TURN_MS);    break;
+        case ACTION_WEST:     ESP_LOGI(TAG, "WEST");     motor_turn_left(TURN_MS);     break;
+        case ACTION_STAY:     ESP_LOGI(TAG, "STAY");     motor_stop();                 break;
+        case ACTION_INTERACT: ESP_LOGI(TAG, "INTERACT"); motor_stop();                 break;
+        default:              ESP_LOGW(TAG, "Unknown action %d", action_id);           break;
     }
 }

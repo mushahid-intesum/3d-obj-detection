@@ -3,7 +3,7 @@
  * @brief Entry point for MCU ImageNav firmware.
  *
  * Supports two modes:
- *   MODE_COLLECT:  Data collection — stream frames to laptop (Phase 1/2)
+ *   MODE_COLLECT:  Data collection — stream JPEG frames to laptop (Phase 1/2)
  *   MODE_NAVIGATE: Autonomous navigation — run inference on-board (Phase 7)
  */
 #include <stdio.h>
@@ -14,7 +14,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
-#include "pin_config.h"
+#include "config.h"
 #include "camera.h"
 #include "ultrasonic.h"
 #include "motor.h"
@@ -28,18 +28,18 @@ static const char *TAG = "main";
  *  Mode selection — change this to switch
  * ═══════════════════════════════════════════ */
 typedef enum {
-    MODE_COLLECT,       /* Phase 1/2: WiFi streaming to laptop */
-    MODE_NAVIGATE,      /* Phase 7:   Autonomous navigation    */
+    MODE_COLLECT,       /* Phase 1/2: WiFi JPEG streaming to laptop */
+    MODE_NAVIGATE,      /* Phase 7:   Autonomous navigation          */
 } firmware_mode_t;
 
 static const firmware_mode_t FIRMWARE_MODE = MODE_NAVIGATE;
 /* ═══════════════════════════════════════════ */
 
-/** Buffer for downscaled 48x48 RGB888 image (collection mode). */
-static uint8_t s_img_48x48[IMG_TARGET_SIZE];
-
 /**
  * @brief Data collection task (Phase 1/2).
+ *
+ * Streams JPEG frames to the laptop. The laptop decodes JPEG
+ * and saves as 48×48 RGB for training.
  */
 static void data_collection_task(void *pvParam)
 {
@@ -53,7 +53,7 @@ static void data_collection_task(void *pvParam)
     }
 
     uint32_t frame_id = 0;
-    uint8_t last_action = ACTION_STOP;
+    uint8_t last_action = ACTION_STAY;
 
     while (stream_is_connected()) {
         char cmd = 0;
@@ -63,13 +63,14 @@ static void data_collection_task(void *pvParam)
             /* No command — just capture and send */
         } else if (err == ESP_OK) {
             uint16_t dist = ultrasonic_get_cached_cm();
-            int action = ACTION_STOP;
+            uint8_t action = ACTION_STAY;
 
             switch (cmd) {
-            case 'F': action = ACTION_FORWARD;    break;
-            case 'L': action = ACTION_TURN_LEFT;  break;
-            case 'R': action = ACTION_TURN_RIGHT; break;
-            case 'S': action = ACTION_STOP;       break;
+            case 'F': action = ACTION_NORTH; break;
+            case 'B': action = ACTION_SOUTH; break;
+            case 'L': action = ACTION_WEST;  break;
+            case 'R': action = ACTION_EAST;  break;
+            case 'S': action = ACTION_STAY;  break;
             case 'Q':
                 ESP_LOGI(TAG, "Quit command received");
                 motor_stop();
@@ -79,27 +80,24 @@ static void data_collection_task(void *pvParam)
                 continue;
             }
 
-            if (action == ACTION_FORWARD && dist < 12) {
+            /* Ultrasonic safety override */
+            if (action == ACTION_NORTH && dist < US_OBSTACLE_CM) {
                 ESP_LOGW(TAG, "Ultrasonic override! dist=%u cm", dist);
-                action = ACTION_TURN_RIGHT;
+                action = ACTION_EAST;
             }
 
-            motor_execute_action(action, 150);
-            last_action = (uint8_t)action;
+            motor_execute_action(action);
+            last_action = action;
         } else {
             break;
         }
 
-        uint8_t *raw_buf = NULL;
-        int w = 0, h = 0;
-        size_t len = 0;
-
-        if (camera_capture(&raw_buf, &w, &h, &len) == ESP_OK) {
-            image_downsample(raw_buf, w, h, s_img_48x48);
-            camera_fb_release();
-
+        /* Capture JPEG frame and stream */
+        camera_fb_t *fb = camera_capture_frame();
+        if (fb) {
             uint16_t dist = ultrasonic_get_cached_cm();
-            stream_send_frame(frame_id, s_img_48x48, dist, last_action);
+            stream_send_frame(frame_id, fb->buf, dist, last_action);
+            camera_release_frame(fb);
             frame_id++;
 
             if (frame_id % 100 == 0) {
@@ -133,10 +131,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* Initialize peripherals (always needed) */
-    ESP_LOGI(TAG, "Initializing camera...");
-    ESP_ERROR_CHECK(camera_init());
-
+    /* Initialize ultrasonic + motors (always needed) */
     ESP_LOGI(TAG, "Initializing ultrasonic...");
     ESP_ERROR_CHECK(ultrasonic_init());
     ESP_ERROR_CHECK(ultrasonic_start_task());
@@ -147,6 +142,10 @@ void app_main(void)
     /* Mode-specific startup */
     switch (FIRMWARE_MODE) {
     case MODE_COLLECT:
+        /* JPEG camera for streaming */
+        ESP_LOGI(TAG, "Initializing camera (JPEG)...");
+        ESP_ERROR_CHECK(camera_init_jpeg());
+
         /* WiFi + TCP streaming to laptop */
         ESP_LOGI(TAG, "Connecting to WiFi...");
         ESP_ERROR_CHECK(wifi_init_sta());
@@ -158,7 +157,10 @@ void app_main(void)
         break;
 
     case MODE_NAVIGATE:
-        /* Autonomous navigation — no WiFi needed */
+        /* RGB camera for on-board inference */
+        ESP_LOGI(TAG, "Initializing camera (RGB565)...");
+        ESP_ERROR_CHECK(camera_init_rgb());
+
         ESP_LOGI(TAG, "Starting autonomous navigation...");
         ESP_LOGI(TAG, "Press GOAL button to capture target, then robot navigates.");
         navigator_start(NAV_GOAL_FROM_BUTTON);

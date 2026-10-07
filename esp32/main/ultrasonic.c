@@ -6,7 +6,7 @@
  * voltage divider (5V → 3.3V) for ESP32-S3 compatibility.
  */
 #include "ultrasonic.h"
-#include "pin_config.h"
+#include "config.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -16,9 +16,6 @@
 #include <string.h>
 
 static const char *TAG = "ultrasonic";
-
-/** Timeout for echo pulse in microseconds (~4m range). */
-#define US_TIMEOUT_US   25000
 
 /** Number of readings for median filter. */
 #define MEDIAN_COUNT    3
@@ -122,7 +119,7 @@ uint16_t ultrasonic_get_cached_cm(void)
 }
 
 /**
- * @brief Background polling task (10 Hz).
+ * @brief Background polling task.
  */
 static void ultrasonic_task(void *pvParam)
 {
@@ -131,7 +128,7 @@ static void ultrasonic_task(void *pvParam)
         if (ultrasonic_measure(&cm) == ESP_OK) {
             s_cached_distance_cm = cm;
         }
-        vTaskDelay(pdMS_TO_TICKS(100)); /* 10 Hz */
+        vTaskDelay(pdMS_TO_TICKS(US_POLL_MS));
     }
 }
 
@@ -139,11 +136,7 @@ esp_err_t ultrasonic_start_task(void)
 {
     BaseType_t ret = xTaskCreatePinnedToCore(
         ultrasonic_task, "ultrasonic",
-        2048,           /* stack size */
-        NULL,           /* param */
-        2,              /* priority: low */
-        NULL,           /* handle */
-        0               /* core 0 */
+        2048, NULL, 2, NULL, 0
     );
 
     if (ret != pdPASS) {
@@ -151,6 +144,7 @@ esp_err_t ultrasonic_start_task(void)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Ultrasonic polling task started (10 Hz, core 0)");
+    ESP_LOGI(TAG, "Ultrasonic polling task started (%d ms, core 0)",
+             US_POLL_MS);
     return ESP_OK;
 }
