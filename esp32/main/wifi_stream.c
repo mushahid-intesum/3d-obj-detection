@@ -62,20 +62,16 @@ esp_err_t wifi_init_sta(void)
 {
     s_wifi_event_group = xEventGroupCreate();
 
-    ESP_LOGI(TAG, "[1/7] esp_netif_init...");
-    ESP_ERROR_CHECK(esp_netif_init());
-
-    ESP_LOGI(TAG, "[2/7] esp_event_loop_create_default...");
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    ESP_LOGI(TAG, "[3/7] esp_netif_create_default_wifi_sta...");
+    /* esp_netif_init() and esp_event_loop_create_default() already
+       called in app_main() — just create the STA netif here. */
+    ESP_LOGI(TAG, "[1/5] esp_netif_create_default_wifi_sta...");
     esp_netif_create_default_wifi_sta();
 
-    ESP_LOGI(TAG, "[4/7] esp_wifi_init...");
+    ESP_LOGI(TAG, "[2/5] esp_wifi_init...");
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    ESP_LOGI(TAG, "[5/7] Registering event handlers...");
+    ESP_LOGI(TAG, "[3/5] Registering event handlers...");
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
@@ -83,7 +79,7 @@ esp_err_t wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &instance_got_ip));
 
-    ESP_LOGI(TAG, "[6/7] esp_wifi_set_mode + set_config + start...");
+    ESP_LOGI(TAG, "[4/5] esp_wifi_set_mode + set_config + start...");
     wifi_config_t wifi_config = {
         .sta = {
             .ssid     = CONFIG_WIFI_SSID,
@@ -95,7 +91,7 @@ esp_err_t wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "[7/7] Waiting for connection (SSID: %s, timeout 30s)...", CONFIG_WIFI_SSID);
+    ESP_LOGI(TAG, "[5/5] Waiting for connection (SSID: %s, timeout 30s)...", CONFIG_WIFI_SSID);
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,

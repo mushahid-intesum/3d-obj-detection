@@ -131,6 +131,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    /* Network/event subsystem — must init BEFORE any peripheral that
+       might trigger events. Doing this early prevents stack issues. */
+    ESP_LOGI(TAG, "Initializing network stack...");
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
     /* Initialize ultrasonic (always needed) */
     ESP_LOGI(TAG, "Initializing ultrasonic...");
     ESP_ERROR_CHECK(ultrasonic_init());
