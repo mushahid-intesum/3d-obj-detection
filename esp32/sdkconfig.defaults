@@ -1,6 +1,9 @@
 # ESP32-S3 defaults for MCU ImageNav
 CONFIG_IDF_TARGET="esp32s3"
 
+# Flash — board has 16MB, default 2MB causes size warnings
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
 # PSRAM (required for camera DMA buffers)
 CONFIG_ESP32S3_SPIRAM_SUPPORT=y
 CONFIG_SPIRAM=y
@@ -10,15 +13,14 @@ CONFIG_SPIRAM_SPEED_40M=y
 # Camera
 CONFIG_CAMERA_TASK_STACK_SIZE=4096
 
-# WiFi
-CONFIG_ESP_WIFI_SSID="Network"
-CONFIG_ESP_WIFI_PASSWORD="Excels!or"
-
-# Partition table: default with enough space
+# Partition table — use default single-factory (plenty of space with 16MB)
 CONFIG_PARTITION_TABLE_CUSTOM=n
 
-# Increase main task stack for init
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# Increase main task stack for init (camera + wifi + motor)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# Task watchdog — WiFi init can take >5s on first boot
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 
 # FreeRTOS
 CONFIG_FREERTOS_HZ=1000
