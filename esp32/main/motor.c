@@ -52,9 +52,9 @@ esp_err_t motor_init(void)
     /* LEDC timer */
     ledc_timer_config_t timer = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
-        .duty_resolution = LEDC_RESOLUTION,
+        .duty_resolution = (ledc_timer_bit_t)MOTOR_PWM_BITS,
         .timer_num       = LEDC_TIMER_0,
-        .freq_hz         = LEDC_FREQ_HZ,
+        .freq_hz         = MOTOR_PWM_FREQ_HZ,
         .clk_cfg         = LEDC_AUTO_CLK,
     };
     ESP_ERROR_CHECK(ledc_timer_config(&timer));

@@ -3,6 +3,7 @@
  * @brief WiFi STA mode and TCP server for data collection streaming.
  */
 #include "wifi_stream.h"
+#include "image_proc.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
