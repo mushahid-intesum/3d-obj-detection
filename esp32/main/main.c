@@ -131,20 +131,21 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* Initialize ultrasonic + motors (always needed) */
+    /* Initialize ultrasonic (always needed) */
     ESP_LOGI(TAG, "Initializing ultrasonic...");
     ESP_ERROR_CHECK(ultrasonic_init());
     ESP_ERROR_CHECK(ultrasonic_start_task());
 
-    ESP_LOGI(TAG, "Initializing motors...");
-    ESP_ERROR_CHECK(motor_init());
-
     /* Mode-specific startup */
     switch (FIRMWARE_MODE) {
     case MODE_COLLECT:
-        /* JPEG camera for streaming */
+        /* Camera FIRST — claims LEDC_TIMER_0/CH_0 for XCLK */
         ESP_LOGI(TAG, "Initializing camera (JPEG)...");
         ESP_ERROR_CHECK(camera_init_jpeg());
+
+        /* Motors AFTER camera — uses LEDC_TIMER_1/CH_2,3 */
+        ESP_LOGI(TAG, "Initializing motors...");
+        ESP_ERROR_CHECK(motor_init());
 
         /* WiFi + TCP streaming to laptop */
         ESP_LOGI(TAG, "Connecting to WiFi...");
@@ -157,9 +158,13 @@ void app_main(void)
         break;
 
     case MODE_NAVIGATE:
-        /* RGB camera for on-board inference */
+        /* Camera FIRST */
         ESP_LOGI(TAG, "Initializing camera (RGB565)...");
         ESP_ERROR_CHECK(camera_init_rgb());
+
+        /* Motors AFTER camera */
+        ESP_LOGI(TAG, "Initializing motors...");
+        ESP_ERROR_CHECK(motor_init());
 
         ESP_LOGI(TAG, "Starting autonomous navigation...");
         ESP_LOGI(TAG, "Goal image will be captured in 3 seconds.");
