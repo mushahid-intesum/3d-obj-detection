@@ -40,12 +40,12 @@
  *  Motor A (left):  IN1/IN2 direction, ENA speed (PWM)
  *  Motor B (right): IN3/IN4 direction, ENB speed (PWM)
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define MOTOR_IN1       35             /* Motor A direction 1      */
-#define MOTOR_IN2       36             /* Motor A direction 2      */
-#define MOTOR_IN3       37             /* Motor B direction 1      */
-#define MOTOR_IN4       14             /* Motor B direction 2      */
-#define MOTOR_ENA       21             /* Motor A PWM enable       */
-#define MOTOR_ENB       47             /* Motor B PWM enable       */
+#define MOTOR_IN1       38             /* Motor A direction 1      */
+#define MOTOR_IN2       39             /* Motor A direction 2      */
+#define MOTOR_IN3       40             /* Motor B direction 1      */
+#define MOTOR_IN4       41             /* Motor B direction 2      */
+#define MOTOR_ENA       42             /* Motor A PWM enable       */
+#define MOTOR_ENB       14             /* Motor B PWM enable       */
 
 /* PWM config */
 #define MOTOR_PWM_FREQ_HZ  1000
