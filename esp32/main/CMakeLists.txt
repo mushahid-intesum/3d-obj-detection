@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "camera.c"
+        "ultrasonic.c"
+        "motor.c"
+        "image_proc.c"
+        "wifi_stream.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        esp_wifi
+        esp_event
+        esp_timer
+        nvs_flash
+        esp_netif
+        driver
+        esp_http_server
+)
