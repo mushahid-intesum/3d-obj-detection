@@ -13,6 +13,8 @@
 #include "esp_camera.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "camera";
 
@@ -70,8 +72,8 @@ static camera_config_t s_camera_config = {
  */
 static esp_err_t camera_init_common(pixformat_t format)
 {
-    /* Power up camera if PWDN pin is defined (per library README) */
-    if (CAM_PIN_PWDN != -1) {
+#if (CAM_PIN_PWDN >= 0)
+    {
         gpio_config_t pwdn_conf = {
             .pin_bit_mask = (1ULL << CAM_PIN_PWDN),
             .mode = GPIO_MODE_OUTPUT,
@@ -83,6 +85,7 @@ static esp_err_t camera_init_common(pixformat_t format)
         gpio_set_level(CAM_PIN_PWDN, 0);  /* LOW = power on */
         vTaskDelay(pdMS_TO_TICKS(10));     /* let camera wake up */
     }
+#endif
 
     /* Set format for this init call */
     s_camera_config.pixel_format = format;
