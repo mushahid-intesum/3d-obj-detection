@@ -32,7 +32,7 @@ typedef enum {
     MODE_NAVIGATE,      /* Phase 7:   Autonomous navigation          */
 } firmware_mode_t;
 
-static const firmware_mode_t FIRMWARE_MODE = MODE_NAVIGATE;
+static const firmware_mode_t FIRMWARE_MODE = MODE_COLLECT;
 /* ═══════════════════════════════════════════ */
 
 /**
