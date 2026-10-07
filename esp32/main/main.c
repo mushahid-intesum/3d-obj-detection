@@ -2,10 +2,9 @@
  * @file main.c
  * @brief Entry point for MCU ImageNav firmware.
  *
- * Phase 1: Hardware validation mode.
- *   - Initializes camera, ultrasonic, motors, WiFi.
- *   - Accepts TCP commands from laptop and streams frames back.
- *   - Serves as the data collection firmware for Phase 2.
+ * Supports two modes:
+ *   MODE_COLLECT:  Data collection — stream frames to laptop (Phase 1/2)
+ *   MODE_NAVIGATE: Autonomous navigation — run inference on-board (Phase 7)
  */
 #include <stdio.h>
 #include <string.h>
@@ -21,17 +20,26 @@
 #include "motor.h"
 #include "image_proc.h"
 #include "wifi_stream.h"
+#include "navigator.h"
 
 static const char *TAG = "main";
 
-/** Buffer for downscaled 48x48 RGB888 image. */
+/* ═══════════════════════════════════════════
+ *  Mode selection — change this to switch
+ * ═══════════════════════════════════════════ */
+typedef enum {
+    MODE_COLLECT,       /* Phase 1/2: WiFi streaming to laptop */
+    MODE_NAVIGATE,      /* Phase 7:   Autonomous navigation    */
+} firmware_mode_t;
+
+static const firmware_mode_t FIRMWARE_MODE = MODE_NAVIGATE;
+/* ═══════════════════════════════════════════ */
+
+/** Buffer for downscaled 48x48 RGB888 image (collection mode). */
 static uint8_t s_img_48x48[IMG_TARGET_SIZE];
 
 /**
- * @brief Data collection task.
- *
- * Waits for commands from the laptop, executes actions,
- * captures + downscales a frame, and streams it back.
+ * @brief Data collection task (Phase 1/2).
  */
 static void data_collection_task(void *pvParam)
 {
@@ -48,17 +56,15 @@ static void data_collection_task(void *pvParam)
     uint8_t last_action = ACTION_STOP;
 
     while (stream_is_connected()) {
-        /* 1. Receive command from laptop */
         char cmd = 0;
         esp_err_t err = stream_recv_command(&cmd);
 
         if (err == ESP_ERR_TIMEOUT) {
-            /* No command received within timeout — just capture and send frame */
+            /* No command — just capture and send */
         } else if (err == ESP_OK) {
-            /* 2. Safety check: ultrasonic override */
             uint16_t dist = ultrasonic_get_cached_cm();
-
             int action = ACTION_STOP;
+
             switch (cmd) {
             case 'F': action = ACTION_FORWARD;    break;
             case 'L': action = ACTION_TURN_LEFT;  break;
@@ -73,31 +79,25 @@ static void data_collection_task(void *pvParam)
                 continue;
             }
 
-            /* Safety override */
             if (action == ACTION_FORWARD && dist < 12) {
                 ESP_LOGW(TAG, "Ultrasonic override! dist=%u cm", dist);
                 action = ACTION_TURN_RIGHT;
             }
 
-            /* 3. Execute action */
             motor_execute_action(action, 150);
             last_action = (uint8_t)action;
         } else {
-            /* Client disconnected */
             break;
         }
 
-        /* 4. Capture frame */
         uint8_t *raw_buf = NULL;
         int w = 0, h = 0;
         size_t len = 0;
 
         if (camera_capture(&raw_buf, &w, &h, &len) == ESP_OK) {
-            /* 5. Downsample 320x240 → 48x48 */
             image_downsample(raw_buf, w, h, s_img_48x48);
             camera_fb_release();
 
-            /* 6. Stream to laptop */
             uint16_t dist = ultrasonic_get_cached_cm();
             stream_send_frame(frame_id, s_img_48x48, dist, last_action);
             frame_id++;
@@ -119,8 +119,9 @@ done:
 void app_main(void)
 {
     ESP_LOGI(TAG, "╔══════════════════════════════════╗");
-    ESP_LOGI(TAG, "║   MCU ImageNav — Phase 1         ║");
-    ESP_LOGI(TAG, "║   Hardware Validation + Collect   ║");
+    ESP_LOGI(TAG, "║   MCU ImageNav Firmware           ║");
+    ESP_LOGI(TAG, "║   Mode: %s              ║",
+             FIRMWARE_MODE == MODE_COLLECT ? "COLLECT " : "NAVIGATE");
     ESP_LOGI(TAG, "╚══════════════════════════════════╝");
 
     /* Initialize NVS (required for WiFi) */
@@ -132,7 +133,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* Initialize peripherals */
+    /* Initialize peripherals (always needed) */
     ESP_LOGI(TAG, "Initializing camera...");
     ESP_ERROR_CHECK(camera_init());
 
@@ -143,28 +144,24 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing motors...");
     ESP_ERROR_CHECK(motor_init());
 
-    /* Quick motor test: forward, left, right, stop */
-    ESP_LOGI(TAG, "Motor self-test...");
-    motor_execute_action(ACTION_FORWARD, 100);
-    vTaskDelay(pdMS_TO_TICKS(500));
-    motor_execute_action(ACTION_TURN_LEFT, 100);
-    vTaskDelay(pdMS_TO_TICKS(500));
-    motor_execute_action(ACTION_TURN_RIGHT, 100);
-    vTaskDelay(pdMS_TO_TICKS(500));
-    motor_stop();
-    ESP_LOGI(TAG, "Motor self-test complete");
+    /* Mode-specific startup */
+    switch (FIRMWARE_MODE) {
+    case MODE_COLLECT:
+        /* WiFi + TCP streaming to laptop */
+        ESP_LOGI(TAG, "Connecting to WiFi...");
+        ESP_ERROR_CHECK(wifi_init_sta());
 
-    /* Connect to WiFi */
-    ESP_LOGI(TAG, "Connecting to WiFi...");
-    ESP_ERROR_CHECK(wifi_init_sta());
+        xTaskCreatePinnedToCore(
+            data_collection_task, "collect",
+            8192, NULL, 5, NULL, 1
+        );
+        break;
 
-    /* Start data collection on core 1 */
-    xTaskCreatePinnedToCore(
-        data_collection_task, "collect",
-        8192,       /* stack: 8KB */
-        NULL,
-        5,          /* priority */
-        NULL,
-        1           /* core 1 */
-    );
+    case MODE_NAVIGATE:
+        /* Autonomous navigation — no WiFi needed */
+        ESP_LOGI(TAG, "Starting autonomous navigation...");
+        ESP_LOGI(TAG, "Press GOAL button to capture target, then robot navigates.");
+        navigator_start(NAV_GOAL_FROM_BUTTON);
+        break;
+    }
 }

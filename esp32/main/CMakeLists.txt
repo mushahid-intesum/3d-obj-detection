@@ -6,6 +6,9 @@ idf_component_register(
         "motor.c"
         "image_proc.c"
         "wifi_stream.c"
+        "correlation.c"
+        "navigator.c"
+        "inference.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES
