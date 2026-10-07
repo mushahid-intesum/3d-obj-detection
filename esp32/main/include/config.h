@@ -9,7 +9,7 @@
 #define CONFIG_H
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  OV5640 Camera on ESP32-S3-WROOM (24-pin, 160° wide-angle fisheye)
+ *  OV3660 Camera on ESP32-S3-WROOM (24-pin, 160° wide-angle fisheye)
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define CAM_PIN_PWDN    (-1)
 #define CAM_PIN_RESET   (-1)
@@ -28,7 +28,7 @@
 #define CAM_PIN_HREF    7
 #define CAM_PIN_PCLK    13
 
-#define CAM_XCLK_FREQ   10000000     /* 10 MHz                   */
+#define CAM_XCLK_FREQ   20000000     /* 20 MHz (OV3660 needs ≥20) */
 #define CAM_FB_COUNT     2           /* double-buffer DMA        */
 #define CAM_JPEG_QUALITY 15          /* 0-63, lower = better     */
 
