@@ -177,22 +177,20 @@ def visualize_noise(length: int = 500, beta: float = 1.0, seed: int = 42):
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Pink noise generator debug tool")
-    parser.add_argument("--length", type=int, default=500, help="Sequence length")
-    parser.add_argument("--beta", type=float, default=1.0, help="Spectral exponent")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    args = parser.parse_args()
+    # ─── Configuration ───
+    LENGTH = 500        # Sequence length
+    BETA   = 1.0        # Spectral exponent (1.0=pink, 2.0=brown)
+    SEED   = 42         # Random seed
 
     # Print sample actions
-    actions = generate_exploration_actions(args.length, beta=args.beta, seed=args.seed)
+    actions = generate_exploration_actions(LENGTH, beta=BETA, seed=SEED)
     names = {0: "FWD", 1: "LFT", 2: "RGT"}
     print(f"First 50 actions: {' '.join(names[a] for a in actions[:50])}")
 
     unique, counts = np.unique(actions, return_counts=True)
-    print(f"\nDistribution over {args.length} steps:")
+    print(f"\nDistribution over {LENGTH} steps:")
     for u, c in zip(unique, counts):
-        print(f"  {names[u]}: {c} ({100*c/args.length:.1f}%)")
+        print(f"  {names[u]}: {c} ({100*c/LENGTH:.1f}%)")
 
     # Visualize if matplotlib is available
-    visualize_noise(args.length, args.beta, args.seed)
+    visualize_noise(LENGTH, BETA, SEED)

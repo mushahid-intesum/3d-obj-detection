@@ -4,14 +4,9 @@ explorer.py — Autonomous pink-noise exploration controller for Phase 2.
 
 Connects to the ESP32 robot, sends pink-noise actions, receives frames,
 and saves the complete exploration dataset to disk.
-
-Usage:
-    python explorer.py --host <ESP32_IP> --output ./data/session_01
 """
 
-import argparse
 import os
-import sys
 import time
 import socket
 import struct
@@ -21,6 +16,20 @@ import signal
 import numpy as np
 from pink_noise import generate_exploration_actions
 
+# ═══════════════════════════════════════════
+#  Configuration — edit these before running
+# ═══════════════════════════════════════════
+ESP32_HOST          = "192.168.1.100"       # TODO: set ESP32 IP
+ESP32_PORT          = 8888
+OUTPUT_DIR          = "./data/session_01"   # output dir for this session
+DURATION_SEC        = 1800                  # exploration duration (1800 = 30 min)
+RATE_HZ             = 5.0                   # action/frame rate
+BETA                = 1.0                   # noise exponent (1.0=pink, 2.0=brown)
+SEED                = None                  # random seed (None = random)
+OBSTACLE_THRESH_CM  = 12                    # ultrasonic override threshold
+# ═══════════════════════════════════════════
+
+# Protocol constants (must match wifi_stream.h)
 MAGIC = 0x494D4731
 HEADER_SIZE = 11
 IMG_W, IMG_H, IMG_CH = 48, 48, 3
@@ -98,7 +107,6 @@ class ExplorationSession:
         with open(os.path.join(self.output_dir, "session_meta.json"), "w") as f:
             json.dump(self.meta, f, indent=2)
 
-        # Compact archive of all frames
         if self.trajectory:
             all_frames = []
             for step in self.trajectory:
@@ -114,29 +122,28 @@ class ExplorationSession:
               f"Overrides: {self.meta['total_overrides']}")
 
 
-def run_exploration(host, port, output_dir, duration_sec, rate_hz,
-                    beta, seed, obstacle_cm):
+def run_exploration():
     global _shutdown
-    total_steps = int(duration_sec * rate_hz)
-    step_interval = 1.0 / rate_hz
+    total_steps = int(DURATION_SEC * RATE_HZ)
+    step_interval = 1.0 / RATE_HZ
 
-    print(f"[*] Generating {total_steps} pink-noise actions (beta={beta})...")
-    actions = generate_exploration_actions(total_steps, beta=beta, seed=seed)
+    print(f"[*] Generating {total_steps} pink-noise actions (beta={BETA})...")
+    actions = generate_exploration_actions(total_steps, beta=BETA, seed=SEED)
 
-    print(f"[*] Connecting to {host}:{port}...")
+    print(f"[*] Connecting to {ESP32_HOST}:{ESP32_PORT}...")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(10)
-    sock.connect((host, port))
+    sock.connect((ESP32_HOST, ESP32_PORT))
     print("[OK] Connected!")
 
-    session = ExplorationSession(output_dir)
+    session = ExplorationSession(OUTPUT_DIR)
     session.meta["start_time"] = time.time()
     session.meta["config"] = {
-        "duration_sec": duration_sec, "rate_hz": rate_hz,
-        "beta": beta, "seed": seed, "obstacle_cm": obstacle_cm,
+        "duration_sec": DURATION_SEC, "rate_hz": RATE_HZ,
+        "beta": BETA, "seed": SEED, "obstacle_cm": OBSTACLE_THRESH_CM,
     }
 
-    print(f"[*] Exploring for {duration_sec}s at {rate_hz}Hz ({total_steps} steps)")
+    print(f"[*] Exploring for {DURATION_SEC}s at {RATE_HZ}Hz ({total_steps} steps)")
     print(f"{'Step':>7} | {'Action':>6} | {'Dist':>6} | {'Ovr':>4} | {'FPS':>5}")
     print("-" * 42)
 
@@ -154,7 +161,7 @@ def run_exploration(host, port, output_dir, duration_sec, rate_hz,
 
             frame_id, image, dist_cm, reported = receive_frame(sock)
 
-            was_override = (reported != action and dist_cm < obstacle_cm)
+            was_override = (reported != action and dist_cm < OBSTACLE_THRESH_CM)
             if was_override:
                 action = reported
                 overrides += 1
@@ -186,22 +193,6 @@ def run_exploration(host, port, output_dir, duration_sec, rate_hz,
         session.save()
 
 
-def main():
-    signal.signal(signal.SIGINT, signal_handler)
-    p = argparse.ArgumentParser(description="Phase 2: Pink-Noise Exploration")
-    p.add_argument("--host", required=True, help="ESP32 IP address")
-    p.add_argument("--port", type=int, default=8888)
-    p.add_argument("--output", required=True, help="Output dir (e.g., ./data/session_01)")
-    p.add_argument("--duration", type=int, default=1800, help="Seconds (default: 1800)")
-    p.add_argument("--rate", type=float, default=5.0, help="Hz (default: 5)")
-    p.add_argument("--beta", type=float, default=1.0, help="Noise exponent (default: 1.0)")
-    p.add_argument("--seed", type=int, default=None)
-    p.add_argument("--obstacle-cm", type=int, default=12, help="Override threshold (cm)")
-    args = p.parse_args()
-
-    run_exploration(args.host, args.port, args.output, args.duration,
-                    args.rate, args.beta, args.seed, args.obstacle_cm)
-
-
 if __name__ == "__main__":
-    main()
+    signal.signal(signal.SIGINT, signal_handler)
+    run_exploration()
