@@ -9,6 +9,7 @@
 #include "config.h"
 #include "esp_log.h"
 #include "driver/spi_slave.h"
+#include "freertos/FreeRTOS.h"
 #include <string.h>
 
 static const char *TAG = "spi_slave";
