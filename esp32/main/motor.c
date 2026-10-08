@@ -22,6 +22,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <math.h>
+
 static const char *TAG = "motor";
 
 /* ── PWM channels ── */
@@ -138,4 +140,76 @@ void motor_execute_action(uint8_t action_id)
         case ACTION_INTERACT: ESP_LOGI(TAG, "INTERACT"); motor_stop();                 break;
         default:              ESP_LOGW(TAG, "Unknown action %d", action_id);           break;
     }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  Closed-loop heading control (requires IMU via UART)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+#include "imu_uart.h"
+
+#define HEADING_TOLERANCE  3.0f    /* default degrees */
+#define HEADING_POLL_MS    20      /* check heading every 20ms */
+
+bool motor_turn_to_heading(float target_heading, float tolerance_deg,
+                           uint32_t timeout_ms)
+{
+    if (!imu_is_ready()) {
+        ESP_LOGW(TAG, "IMU not ready — falling back to timed turn");
+        /* Rough fallback: assume ~180°/s turn rate */
+        float diff = imu_angle_diff(target_heading, imu_get_heading());
+        uint32_t ms = (uint32_t)(fabsf(diff) / 180.0f * TURN_90_MS * 2);
+        if (diff > 0) motor_turn_right(ms);
+        else          motor_turn_left(ms);
+        return false;
+    }
+
+    target_heading = imu_normalize(target_heading);
+    uint32_t elapsed = 0;
+
+    while (elapsed < timeout_ms) {
+        float current = imu_get_heading();
+        float diff = imu_angle_diff(target_heading, current);
+
+        if (fabsf(diff) <= tolerance_deg) {
+            motor_stop();
+            ESP_LOGI(TAG, "Heading reached: %.1f° (target %.1f°, err %.1f°)",
+                     current, target_heading, diff);
+            return true;
+        }
+
+        /* Turn in the shortest direction */
+        if (diff > 0) {
+            /* Need to turn right */
+            gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);
+            gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);
+        } else {
+            /* Need to turn left */
+            gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);
+            gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);
+        }
+        set_speed(MOTOR_SPEED);
+
+        vTaskDelay(pdMS_TO_TICKS(HEADING_POLL_MS));
+        elapsed += HEADING_POLL_MS;
+    }
+
+    motor_stop();
+    ESP_LOGW(TAG, "Turn timeout! current=%.1f° target=%.1f°",
+             imu_get_heading(), target_heading);
+    return false;
+}
+
+bool motor_turn_relative(float delta_deg, float tolerance, uint32_t timeout_ms)
+{
+    float current = imu_get_heading();
+    if (current < 0) {
+        /* IMU not ready — open-loop fallback */
+        uint32_t ms = (uint32_t)(fabsf(delta_deg) / 45.0f * TURN_45_MS);
+        if (delta_deg > 0) motor_turn_right(ms);
+        else               motor_turn_left(ms);
+        return false;
+    }
+    float target = imu_normalize(current + delta_deg);
+    ESP_LOGI(TAG, "Turn %.0f°: %.1f° → %.1f°", delta_deg, current, target);
+    return motor_turn_to_heading(target, tolerance, timeout_ms);
 }

@@ -6,8 +6,8 @@
  *   MODE_COLLECT:  Data collection — stream JPEG frames to laptop (Phase 1/2)
  *   MODE_NAVIGATE: Autonomous navigation — run inference on-board (Phase 7)
  *
- * No ultrasonic sensor. Depth is learned end-to-end via depth-distilled
- * policy (MiDaS auxiliary loss during training).
+ * Uses Arduino Nano 33 BLE Rev2 as IMU for closed-loop heading control.
+ * No ultrasonic sensor — depth is learned end-to-end.
  */
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +22,7 @@
 #include "config.h"
 #include "camera.h"
 #include "motor.h"
+#include "imu_uart.h"
 #include "wifi_stream.h"
 #include "navigator.h"
 
@@ -48,9 +49,7 @@ static const char *DIR_NAMES[COLLECT_NUM_DIRS] = {
 /**
  * @brief Capture and send a burst of JPEG photos at the current heading.
  *
- * @param frame_id  Pointer to monotonic frame counter (updated in place).
- * @param dir_idx   Direction index (0-7).
- * @return Number of frames successfully sent.
+ * Each frame includes the true IMU heading for accurate labeling.
  */
 static uint32_t capture_burst(uint32_t *frame_id, uint8_t dir_idx)
 {
@@ -58,7 +57,8 @@ static uint32_t capture_burst(uint32_t *frame_id, uint8_t dir_idx)
     for (int p = 0; p < COLLECT_PHOTOS_PER_DIR; p++) {
         camera_fb_t *fb = camera_capture_frame();
         if (fb) {
-            stream_send_jpeg(*frame_id, fb->buf, fb->len, dir_idx);
+            float heading = imu_get_heading();
+            stream_send_jpeg(*frame_id, fb->buf, fb->len, dir_idx, heading);
             camera_release_frame(fb);
             (*frame_id)++;
             sent++;
@@ -71,19 +71,20 @@ static uint32_t capture_burst(uint32_t *frame_id, uint8_t dir_idx)
 }
 
 /**
- * @brief Data collection task (Phase 1/2) — autonomous.
+ * @brief Data collection task (Phase 1/2) — autonomous with IMU.
  *
  * At each position:
- *   1. Face each of 8 directions (N, NE, E, SE, S, SW, W, NW)
- *   2. Take COLLECT_PHOTOS_PER_DIR photos per direction
- *   3. Rotate back to original heading (N)
+ *   1. Record initial heading from IMU
+ *   2. Sweep 8 directions using closed-loop 45° turns
+ *   3. Return to original heading (closed-loop)
  *   4. Move forward one cell
  *
- * Stops when COLLECT_MAX_POSITIONS is reached or TCP client disconnects.
+ * Each photo is tagged with the TRUE IMU heading — not a guess.
+ * Stops after COLLECT_MAX_POSITIONS or TCP disconnect.
  */
 static void data_collection_task(void *pvParam)
 {
-    ESP_LOGI(TAG, "═══ Autonomous Data Collection ═══");
+    ESP_LOGI(TAG, "═══ Autonomous Data Collection (IMU) ═══");
     ESP_LOGI(TAG, "  %d directions × %d photos = %d photos/position",
              COLLECT_NUM_DIRS, COLLECT_PHOTOS_PER_DIR,
              COLLECT_NUM_DIRS * COLLECT_PHOTOS_PER_DIR);
@@ -102,32 +103,34 @@ static void data_collection_task(void *pvParam)
          pos <= COLLECT_MAX_POSITIONS && stream_is_connected();
          pos++) {
 
-        ESP_LOGI(TAG, "── Position %lu / %d ──",
-                 (unsigned long)pos, COLLECT_MAX_POSITIONS);
+        /* Record starting heading */
+        float start_heading = imu_get_heading();
+        ESP_LOGI(TAG, "── Position %lu / %d (heading: %.1f°) ──",
+                 (unsigned long)pos, COLLECT_MAX_POSITIONS, start_heading);
 
-        /* ── 8-direction photo sweep ── */
+        /* ── 8-direction photo sweep using IMU ── */
         for (int d = 0; d < COLLECT_NUM_DIRS; d++) {
-            /* Rotate 45° right to next direction (skip for d=0, already facing fwd) */
             if (d > 0) {
-                motor_turn_right(TURN_45_MS);
+                /* Closed-loop 45° turn using IMU */
+                float target = imu_normalize(start_heading + d * 45.0f);
+                motor_turn_to_heading(target, 3.0f, 3000);
                 vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
             }
 
-            ESP_LOGI(TAG, "  Dir %s: capturing %d photos...",
-                     DIR_NAMES[d], COLLECT_PHOTOS_PER_DIR);
+            ESP_LOGI(TAG, "  Dir %s (%.1f°): capturing %d photos...",
+                     DIR_NAMES[d], imu_get_heading(), COLLECT_PHOTOS_PER_DIR);
 
             capture_burst(&frame_id, (uint8_t)d);
 
             if (!stream_is_connected()) goto done;
         }
 
-        /* ── Rotate back to original heading ──
-         * We've turned 7 × 45° = 315° right. Turn 45° more → 360°. */
-        motor_turn_right(TURN_45_MS);
+        /* ── Return to original heading (closed-loop) ── */
+        motor_turn_to_heading(start_heading, 3.0f, 3000);
         vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
 
-        ESP_LOGI(TAG, "  Sweep complete. Total frames: %lu",
-                 (unsigned long)frame_id);
+        ESP_LOGI(TAG, "  Sweep complete (heading: %.1f°). Total frames: %lu",
+                 imu_get_heading(), (unsigned long)frame_id);
 
         /* ── Move forward one cell ── */
         ESP_LOGI(TAG, "  Moving forward...");
@@ -159,11 +162,25 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* Network/event subsystem — must init BEFORE any peripheral that
-       might trigger events. Doing this early prevents stack issues. */
+    /* Network/event subsystem */
     ESP_LOGI(TAG, "Initializing network stack...");
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    /* Initialize IMU (Arduino Nano 33 BLE via UART) */
+    ESP_LOGI(TAG, "Initializing IMU (UART)...");
+    ESP_ERROR_CHECK(imu_init());
+
+    /* Wait for IMU to provide valid readings */
+    ESP_LOGI(TAG, "Waiting for IMU...");
+    for (int i = 0; i < 50 && !imu_is_ready(); i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (imu_is_ready()) {
+        ESP_LOGI(TAG, "IMU ready — initial heading: %.1f°", imu_get_heading());
+    } else {
+        ESP_LOGW(TAG, "IMU not ready — will use open-loop fallback");
+    }
 
     /* Mode-specific startup */
     switch (FIRMWARE_MODE) {
@@ -187,16 +204,13 @@ void app_main(void)
         break;
 
     case MODE_NAVIGATE:
-        /* Camera FIRST */
         ESP_LOGI(TAG, "Initializing camera (RGB565)...");
         ESP_ERROR_CHECK(camera_init_rgb());
 
-        /* Motors AFTER camera */
         ESP_LOGI(TAG, "Initializing motors...");
         ESP_ERROR_CHECK(motor_init());
 
         ESP_LOGI(TAG, "Starting autonomous navigation...");
-        ESP_LOGI(TAG, "Goal image will be captured in 3 seconds.");
         navigator_start(NAV_GOAL_AUTO_CAPTURE);
         break;
     }

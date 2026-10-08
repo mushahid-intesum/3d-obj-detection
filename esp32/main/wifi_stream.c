@@ -167,24 +167,27 @@ static esp_err_t send_all(const void *buf, size_t len)
 }
 
 esp_err_t stream_send_jpeg(uint32_t frame_id, const uint8_t *jpeg_buf,
-                           uint32_t jpeg_len, uint8_t dir_index)
+                           uint32_t jpeg_len, uint8_t dir_index,
+                           float heading_deg)
 {
     if (s_client_sock < 0) return ESP_FAIL;
 
     /*
-     * Packet layout:
-     *   [0..3]   magic:     0x494D4732 ("IMG2")
-     *   [4..7]   frame_id   (uint32 LE)
-     *   [8]      dir_index  (uint8, 0-7)
-     *   [9..12]  jpeg_len   (uint32 LE)
-     *   [13..N]  jpeg_data  (variable)
+     * Packet layout (v3):
+     *   [0..3]   magic:       0x494D4733 ("IMG3")
+     *   [4..7]   frame_id     (uint32 LE)
+     *   [8]      dir_index    (uint8, 0-7)
+     *   [9..12]  heading_deg  (float32 LE)
+     *   [13..16] jpeg_len     (uint32 LE)
+     *   [17..N]  jpeg_data    (variable)
      */
-    uint8_t header[13];
+    uint8_t header[17];
     uint32_t magic = STREAM_MAGIC;
     memcpy(&header[0], &magic, 4);
     memcpy(&header[4], &frame_id, 4);
     header[8] = dir_index;
-    memcpy(&header[9], &jpeg_len, 4);
+    memcpy(&header[9], &heading_deg, 4);
+    memcpy(&header[13], &jpeg_len, 4);
 
     /* Send header */
     if (send_all(header, sizeof(header)) != ESP_OK) return ESP_FAIL;

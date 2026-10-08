@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "camera.c"
         "motor.c"
+        "imu_uart.c"
         "wifi_stream.c"
         "correlation.c"
         "navigator.c"
@@ -17,5 +18,6 @@ idf_component_register(
         esp_netif
         esp_driver_gpio
         esp_driver_ledc
+        esp_driver_uart
         esp_http_server
 )
