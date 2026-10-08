@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""
+gen_depth.py — Generate MiDaS depth maps for collected images.
+
+Reads images from a collection directory, runs MiDaS Small,
+and saves depth maps as .npy files alongside the images.
+
+Usage:
+    python gen_depth.py --data data/room1_start_west
+    python gen_depth.py --data data/  # process all subdirectories
+"""
+
+import os
+import glob
+import argparse
+
+import numpy as np
+import torch
+from PIL import Image
+from torchvision.transforms import Compose, Resize, ToTensor, Normalize
+
+
+def load_midas(device):
+    """Load MiDaS Small model."""
+    print("Loading MiDaS Small...")
+    model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small", trust_repo=True)
+    model.to(device).eval()
+
+    # MiDaS Small transforms
+    transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True)
+    transform = transforms.small_transform
+
+    print("MiDaS loaded.")
+    return model, transform
+
+
+def process_directory(img_dir, model, transform, device, img_size=48):
+    """Generate depth maps for all images in a directory."""
+    depth_dir = os.path.join(os.path.dirname(img_dir), "depth")
+    os.makedirs(depth_dir, exist_ok=True)
+
+    image_files = sorted(glob.glob(os.path.join(img_dir, "*.jpg")))
+    if not image_files:
+        print(f"  No images found in {img_dir}")
+        return 0
+
+    count = 0
+    for img_path in image_files:
+        basename = os.path.splitext(os.path.basename(img_path))[0]
+        depth_path = os.path.join(depth_dir, f"{basename}.npy")
+
+        # Skip if already processed
+        if os.path.exists(depth_path):
+            count += 1
+            continue
+
+        # Load and transform
+        img = Image.open(img_path).convert("RGB")
+        input_batch = transform(np.array(img)).to(device)
+
+        # Run MiDaS
+        with torch.no_grad():
+            prediction = model(input_batch)
+            prediction = torch.nn.functional.interpolate(
+                prediction.unsqueeze(1),
+                size=(img_size, img_size),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze()
+
+        # Normalize depth to [0, 1]
+        depth = prediction.cpu().numpy()
+        d_min, d_max = depth.min(), depth.max()
+        if d_max - d_min > 1e-6:
+            depth = (depth - d_min) / (d_max - d_min)
+        else:
+            depth = np.zeros_like(depth)
+
+        # Save as float32 numpy array
+        np.save(depth_path, depth.astype(np.float32))
+        count += 1
+
+        if count % 24 == 0:
+            print(f"  Processed {count}/{len(image_files)} images")
+
+    print(f"  Done: {count} depth maps in {depth_dir}")
+    return count
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate MiDaS depth maps")
+    parser.add_argument("--data", required=True,
+                        help="Path to collection dir or parent dir")
+    parser.add_argument("--img-size", type=int, default=48,
+                        help="Output depth map size (NxN)")
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available()
+                        else "cpu")
+    args = parser.parse_args()
+
+    device = torch.device(args.device)
+    print(f"Device: {device}")
+
+    model, transform = load_midas(device)
+
+    # Check if data path contains images/ subdirectory (single collection)
+    img_dir = os.path.join(args.data, "images")
+    if os.path.isdir(img_dir):
+        print(f"\nProcessing: {args.data}")
+        process_directory(img_dir, model, transform, device, args.img_size)
+    else:
+        # Process all subdirectories
+        total = 0
+        for subdir in sorted(os.listdir(args.data)):
+            sub_img_dir = os.path.join(args.data, subdir, "images")
+            if os.path.isdir(sub_img_dir):
+                print(f"\nProcessing: {subdir}")
+                total += process_directory(
+                    sub_img_dir, model, transform, device, args.img_size
+                )
+        print(f"\nTotal: {total} depth maps generated")
+
+
+if __name__ == "__main__":
+    main()

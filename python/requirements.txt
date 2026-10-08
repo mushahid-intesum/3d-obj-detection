@@ -1,9 +1,7 @@
-numpy
-opencv-python
-Pillow
-scipy
-matplotlib
-torch
-onnx
-onnx-tf
-tensorflow
+torch>=2.0
+torchvision>=0.15
+numpy>=1.24
+Pillow>=9.0
+opencv-python>=4.7
+tensorboard>=2.12
+timm>=0.9

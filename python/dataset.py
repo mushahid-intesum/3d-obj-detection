@@ -1,150 +1,306 @@
 #!/usr/bin/env python3
 """
-dataset.py — PyTorch Dataset for the offline RL image-goal navigation dataset.
+dataset.py — Navigation graph + PyTorch Dataset for depth-aware ImageNav.
 
-Loads the index-based dataset produced by hindsight_relabel.py and serves
-(obs, goal, action, reward, next_obs, done) batches for training.
+Builds a topological graph from collected data:
+  - Nodes: (position, direction) with image + heading
+  - Edges: FORWARD, TURN_RIGHT, TURN_LEFT actions
+  - BFS shortest path provides supervision signal
 
-Includes on-the-fly data augmentation (color jitter, horizontal flip).
+Serves (obs, goal, action, depth) batches for training.
 """
 
 import os
+import json
+from collections import deque
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+
+# ─── Action Space ───
+ACTION_FORWARD    = 0
+ACTION_TURN_RIGHT = 1
+ACTION_TURN_LEFT  = 2
+ACTION_STOP       = 3
+NUM_ACTIONS       = 4
+
+ACTION_NAMES = ["FORWARD", "TURN_RIGHT", "TURN_LEFT", "STOP"]
+DIR_NAMES = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+NUM_DIRS = 8
+
+
+class NavGraph:
+    """
+    Topological navigation graph from collected data.
+
+    Nodes: (position_id, direction_index) → image path + heading
+    Edges: actions connecting nodes
+
+    Graph structure:
+      - TURN_RIGHT: (pos, d) → (pos, (d+1)%8)
+      - TURN_LEFT:  (pos, d) → (pos, (d-1)%8)
+      - FORWARD:    (pos, 0) → (pos+1, 0)  [only from forward dir]
+      - BACKWARD:   (pos, 4) → (pos-1, 4)  [only from reverse dir]
+    """
+
+    def __init__(self, collection_dir, photos_per_dir=3):
+        self.collection_dir = collection_dir
+        self.img_dir = os.path.join(collection_dir, "images")
+        self.depth_dir = os.path.join(collection_dir, "depth")
+
+        # Load metadata
+        meta_path = os.path.join(collection_dir, "metadata.json")
+        with open(meta_path) as f:
+            self.metadata = json.load(f)
+
+        # Build node index: (pos, dir) → {image_paths, heading}
+        self.nodes = {}
+        self.num_positions = 0
+
+        for frame in self.metadata["frames"]:
+            pos = frame["position"]
+            d = frame["dir_index"]
+            key = (pos, d)
+
+            if key not in self.nodes:
+                self.nodes[key] = {
+                    "images": [],
+                    "depths": [],
+                    "headings": [],
+                    "position": pos,
+                    "dir_index": d,
+                    "dir_name": frame["dir_name"],
+                }
+            self.nodes[key]["images"].append(
+                os.path.join(self.img_dir, frame["filename"])
+            )
+            depth_file = os.path.splitext(frame["filename"])[0] + ".npy"
+            self.nodes[key]["depths"].append(
+                os.path.join(self.depth_dir, depth_file)
+            )
+            self.nodes[key]["headings"].append(frame["heading_deg"])
+            self.num_positions = max(self.num_positions, pos + 1)
+
+        # Build adjacency list
+        self.adj = {}  # node_key → [(neighbor_key, action)]
+        for (pos, d) in self.nodes:
+            self.adj[(pos, d)] = []
+
+            # Turn edges (always available)
+            right = (pos, (d + 1) % NUM_DIRS)
+            left = (pos, (d - 1) % NUM_DIRS)
+            if right in self.nodes:
+                self.adj[(pos, d)].append((right, ACTION_TURN_RIGHT))
+            if left in self.nodes:
+                self.adj[(pos, d)].append((left, ACTION_TURN_LEFT))
+
+            # Forward edge (only from dir 0 → next position dir 0)
+            if d == 0 and (pos + 1, 0) in self.nodes:
+                self.adj[(pos, d)].append(((pos + 1, 0), ACTION_FORWARD))
+
+            # Backward edge (only from dir 4 → prev position dir 4)
+            if d == 4 and (pos - 1, 4) in self.nodes:
+                self.adj[(pos, d)].append(((pos - 1, 4), ACTION_FORWARD))
+
+        print(f"[NavGraph] {len(self.nodes)} nodes, "
+              f"{self.num_positions} positions, "
+              f"{sum(len(v) for v in self.adj.values())} edges")
+
+    def shortest_path_action(self, start, goal):
+        """
+        BFS shortest path from start to goal.
+
+        Returns:
+            The first action on the optimal path, or ACTION_STOP if
+            start == goal or no path exists.
+        """
+        if start == goal:
+            return ACTION_STOP
+
+        visited = {start}
+        queue = deque()
+
+        # Enqueue neighbors with the action taken from start
+        for neighbor, action in self.adj.get(start, []):
+            if neighbor not in visited:
+                queue.append((neighbor, action))
+                visited.add(neighbor)
+
+        while queue:
+            current, first_action = queue.popleft()
+
+            if current == goal:
+                return first_action
+
+            for neighbor, _ in self.adj.get(current, []):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, first_action))
+
+        # No path found — shouldn't happen in a connected graph
+        return ACTION_STOP
+
+    def get_all_node_keys(self):
+        """Return list of all node keys."""
+        return list(self.nodes.keys())
+
+    def sample_image(self, node_key, rng=None):
+        """Sample a random image path for a node (from the 3 photos)."""
+        images = self.nodes[node_key]["images"]
+        idx = (rng or np.random).randint(0, len(images))
+        return images[idx]
+
+    def sample_depth(self, node_key, rng=None):
+        """Sample a random depth map path for a node."""
+        depths = self.nodes[node_key]["depths"]
+        idx = (rng or np.random).randint(0, len(depths))
+        return depths[idx]
 
 
 class ImageNavDataset(Dataset):
     """
-    Goal-conditioned offline RL dataset.
+    PyTorch Dataset for depth-aware image-goal navigation.
 
-    Frames are stored once in a shared array. Transitions reference
-    frames by index, making the dataset memory-efficient.
+    Samples random (start, goal) pairs from the navigation graph,
+    computes the optimal first action via BFS, and returns
+    (obs, goal, action, depth) for training.
     """
 
-    def __init__(self, dataset_dir, augment=True):
+    def __init__(self, collection_dirs, samples_per_epoch=10000,
+                 img_size=48, augment=True):
         """
         Args:
-            dataset_dir: Path to the offline dataset (output of hindsight_relabel.py).
-            augment:     Whether to apply data augmentation.
+            collection_dirs: List of collection directory paths, or single path.
+            samples_per_epoch: Number of (start, goal) pairs per epoch.
+            img_size: Image size (NxN).
+            augment: Whether to apply data augmentation.
         """
-        # Load shared frame bank
-        frames_data = np.load(os.path.join(dataset_dir, "frames.npz"))
-        self.frames = frames_data["frames"]  # (N_frames, 48, 48, 3) uint8
+        if isinstance(collection_dirs, str):
+            collection_dirs = [collection_dirs]
 
-        # Load transitions
-        trans_data = np.load(os.path.join(dataset_dir, "transitions.npz"))
-        self.obs_idx = trans_data["obs_idx"]            # (N_trans,) int32
-        self.next_obs_idx = trans_data["next_obs_idx"]  # (N_trans,) int32
-        self.goal_idx = trans_data["goal_idx"]          # (N_trans,) int32
-        self.actions = trans_data["actions"]             # (N_trans,) int32
-        self.rewards = trans_data["rewards"]             # (N_trans,) float32
-        self.dones = trans_data["dones"]                 # (N_trans,) bool
+        self.graphs = []
+        self.all_nodes = []  # (graph_idx, node_key) tuples
 
+        for cdir in collection_dirs:
+            graph = NavGraph(cdir)
+            graph_idx = len(self.graphs)
+            self.graphs.append(graph)
+            for key in graph.get_all_node_keys():
+                self.all_nodes.append((graph_idx, key))
+
+        self.samples_per_epoch = samples_per_epoch
+        self.img_size = img_size
         self.augment = augment
-        self.n_transitions = len(self.actions)
+        self.rng = np.random.RandomState(42)
 
-        print(f"[Dataset] {self.n_transitions} transitions, "
-              f"{len(self.frames)} frames, augment={augment}")
+        print(f"[Dataset] {len(self.all_nodes)} total nodes from "
+              f"{len(self.graphs)} collections, "
+              f"{samples_per_epoch} samples/epoch")
 
     def __len__(self):
-        return self.n_transitions
+        return self.samples_per_epoch
 
-    def _to_tensor(self, img_uint8):
-        """Convert (H, W, 3) uint8 image to (3, H, W) float32 tensor in [0, 1]."""
-        return torch.from_numpy(img_uint8).permute(2, 0, 1).float() / 255.0
+    def _load_image(self, path):
+        """Load and normalize image to (3, H, W) float32 tensor."""
+        img = Image.open(path).convert("RGB")
+        if img.size != (self.img_size, self.img_size):
+            img = img.resize((self.img_size, self.img_size), Image.LANCZOS)
+        arr = np.array(img, dtype=np.float32) / 255.0
+        return torch.from_numpy(arr).permute(2, 0, 1)  # (3, H, W)
 
-    def _augment_pair(self, obs, goal):
-        """
-        Apply consistent augmentation to an obs-goal pair.
+    def _load_depth(self, path):
+        """Load depth map as (1, H, W) float32 tensor."""
+        if os.path.exists(path):
+            depth = np.load(path).astype(np.float32)
+            return torch.from_numpy(depth).unsqueeze(0)  # (1, H, W)
+        else:
+            return torch.zeros(1, self.img_size, self.img_size)
 
-        - Random horizontal flip (flip action accordingly — handled in __getitem__)
-        - Random brightness/contrast jitter (applied independently)
-        """
-        flip = False
-        if np.random.random() < 0.5:
-            obs = np.flip(obs, axis=1).copy()
-            goal = np.flip(goal, axis=1).copy()
-            flip = True
-
-        # Color jitter: random brightness and contrast
-        for img in [obs, goal]:
-            if np.random.random() < 0.3:
-                # Brightness: shift by ±30
-                shift = np.random.randint(-30, 31)
-                img[:] = np.clip(img.astype(np.int16) + shift, 0, 255).astype(np.uint8)
-            if np.random.random() < 0.3:
-                # Contrast: scale by 0.7-1.3
-                factor = np.random.uniform(0.7, 1.3)
-                mean = img.mean()
-                img[:] = np.clip((img.astype(np.float32) - mean) * factor + mean,
-                                 0, 255).astype(np.uint8)
-
-        return obs, goal, flip
+    def _augment(self, obs, goal, depth, action):
+        """Consistent augmentation: horizontal flip swaps left/right."""
+        if self.rng.random() < 0.5:
+            obs = obs.flip(-1)      # flip width
+            goal = goal.flip(-1)
+            depth = depth.flip(-1)
+            # Swap TURN_RIGHT ↔ TURN_LEFT
+            if action == ACTION_TURN_RIGHT:
+                action = ACTION_TURN_LEFT
+            elif action == ACTION_TURN_LEFT:
+                action = ACTION_TURN_RIGHT
+        return obs, goal, depth, action
 
     def __getitem__(self, idx):
-        obs = self.frames[self.obs_idx[idx]].copy()
-        next_obs = self.frames[self.next_obs_idx[idx]].copy()
-        goal = self.frames[self.goal_idx[idx]].copy()
-        action = int(self.actions[idx])
-        reward = float(self.rewards[idx])
-        done = bool(self.dones[idx])
+        # Sample random start and goal from same graph
+        gi = self.rng.randint(0, len(self.graphs))
+        graph = self.graphs[gi]
+        keys = graph.get_all_node_keys()
 
+        start_key = keys[self.rng.randint(0, len(keys))]
+        goal_key = keys[self.rng.randint(0, len(keys))]
+
+        # Get optimal action
+        action = graph.shortest_path_action(start_key, goal_key)
+
+        # Load images
+        obs = self._load_image(graph.sample_image(start_key, self.rng))
+        goal_img = self._load_image(graph.sample_image(goal_key, self.rng))
+        depth = self._load_depth(graph.sample_depth(start_key, self.rng))
+
+        # Augment
         if self.augment:
-            obs, goal, flip = self._augment_pair(obs, goal)
-            next_obs_aug, _, _ = self._augment_pair(next_obs, goal)
-            next_obs = next_obs_aug
-
-            # If flipped, swap left/right actions
-            if flip:
-                if action == 1:     # left → right
-                    action = 2
-                elif action == 2:   # right → left
-                    action = 1
+            obs, goal_img, depth, action = self._augment(
+                obs, goal_img, depth, action
+            )
 
         return {
-            "obs": self._to_tensor(obs),            # (3, 48, 48)
-            "goal": self._to_tensor(goal),           # (3, 48, 48)
-            "next_obs": self._to_tensor(next_obs),   # (3, 48, 48)
-            "action": torch.tensor(action, dtype=torch.long),
-            "reward": torch.tensor(reward, dtype=torch.float32),
-            "done": torch.tensor(done, dtype=torch.float32),
+            "obs": obs,                                          # (3, 48, 48)
+            "goal": goal_img,                                    # (3, 48, 48)
+            "depth": depth,                                      # (1, 48, 48)
+            "action": torch.tensor(action, dtype=torch.long),    # scalar
         }
 
 
-def get_dataloader(dataset_dir, batch_size=256, augment=True, num_workers=4):
-    """Create a DataLoader for the offline RL dataset."""
-    dataset = ImageNavDataset(dataset_dir, augment=augment)
-    loader = torch.utils.data.DataLoader(
-        dataset,
+def get_dataloader(collection_dirs, batch_size=128, samples_per_epoch=10000,
+                   augment=True, num_workers=4):
+    """Create DataLoader for ImageNav training."""
+    ds = ImageNavDataset(
+        collection_dirs,
+        samples_per_epoch=samples_per_epoch,
+        augment=augment,
+    )
+    return DataLoader(
+        ds,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
     )
-    return loader
 
 
 if __name__ == "__main__":
-    # ─── Quick test ───
-    DATASET_DIR = "./data/offline_dataset"
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python dataset.py <collection_dir>")
+        sys.exit(1)
 
-    ds = ImageNavDataset(DATASET_DIR, augment=False)
-    print(f"\nDataset size: {len(ds)} transitions")
+    graph = NavGraph(sys.argv[1])
 
+    # Test shortest path
+    keys = graph.get_all_node_keys()
+    if len(keys) >= 2:
+        s, g = keys[0], keys[-1]
+        action = graph.shortest_path_action(s, g)
+        print(f"\nShortest path {s} → {g}: {ACTION_NAMES[action]}")
+
+    # Test dataset
+    ds = ImageNavDataset(sys.argv[1], samples_per_epoch=100, augment=False)
     sample = ds[0]
-    print(f"\nSample keys: {list(sample.keys())}")
-    print(f"  obs shape:      {sample['obs'].shape}")
-    print(f"  goal shape:     {sample['goal'].shape}")
-    print(f"  next_obs shape: {sample['next_obs'].shape}")
-    print(f"  action:         {sample['action'].item()}")
-    print(f"  reward:         {sample['reward'].item()}")
-    print(f"  done:           {sample['done'].item()}")
-
-    loader = get_dataloader(DATASET_DIR, batch_size=32, augment=True, num_workers=0)
-    batch = next(iter(loader))
-    print(f"\nBatch shapes:")
-    for k, v in batch.items():
-        print(f"  {k}: {v.shape}")
+    print(f"\nSample:")
+    for k, v in sample.items():
+        if isinstance(v, torch.Tensor):
+            print(f"  {k}: {v.shape} ({v.dtype})")
+        else:
+            print(f"  {k}: {v}")
