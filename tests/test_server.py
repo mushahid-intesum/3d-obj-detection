@@ -122,24 +122,56 @@ class TestServer:
         self.mot_sock = None
         self.results = {}
 
+    @staticmethod
+    def _get_local_ip():
+        """Get this machine's local IP on the WiFi network."""
+        try:
+            # UDP connect trick — doesn't send any data, just resolves local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return socket.gethostbyname(socket.gethostname())
+
     def start(self):
         """Main entry: wait for connections, run tests."""
+        # Detect local IP
+        local_ip = self._get_local_ip()
+
         print(f"\n{BOLD}{'═' * 60}{RESET}")
         print(f"{BOLD}  ESP32 Integration Test Suite{RESET}")
         print(f"{BOLD}{'═' * 60}{RESET}")
         print(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"  Listening on port {self.port}...")
+        print(f"  {CYAN}Your laptop IP: {BOLD}{local_ip}{RESET}")
+        print()
+        print(f"  {YELLOW}╔═══════════════════════════════════════════════════╗{RESET}")
+        print(f"  {YELLOW}║  Make sure the ESP32 firmware uses:               ║{RESET}")
+        print(f"  {YELLOW}║    TEST_SERVER_IP = \"{local_ip}\"{RESET}")
+        print(f"  {YELLOW}║                                                   ║{RESET}")
+        print(f"  {YELLOW}║  Build with:                                      ║{RESET}")
+        print(f"  {YELLOW}║    -DEXTRA_CFLAGS=\"-DTEST_MODE=1                  ║{RESET}")
+        print(f"  {YELLOW}║     -DTEST_SERVER_IP=\\\\\\\"{local_ip}\\\\\\\"\"  ║{RESET}")
+        print(f"  {YELLOW}║                                                   ║{RESET}")
+        print(f"  {YELLOW}║  Or just edit TEST_SERVER_IP in test_mode.c       ║{RESET}")
+        print(f"  {YELLOW}╚═══════════════════════════════════════════════════╝{RESET}")
+        print()
+        print(f"  {RED}FIREWALL: If boards can't connect, run:{RESET}")
+        print(f"    sudo ufw allow {self.port}/tcp")
+        print(f"    # or: sudo iptables -I INPUT -p tcp --dport {self.port} -j ACCEPT")
         print()
 
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind(("0.0.0.0", self.port))
         srv.listen(2)
-        srv.settimeout(60)
+        srv.settimeout(120)  # 2 minutes to wait for both boards
 
         # ── Wait for both boards to connect ──
         print(f"  Waiting for Camera Board and Motor Board to connect...")
-        print(f"  (timeout: 60s)\n")
+        print(f"  (timeout: 120s)\n")
 
         connections = {}
         try:

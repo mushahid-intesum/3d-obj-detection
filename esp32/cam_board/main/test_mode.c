@@ -31,7 +31,7 @@ static const char *TAG = "cam_test";
 
 /* ── Test server connection ── */
 #ifndef TEST_SERVER_IP
-#define TEST_SERVER_IP   "192.168.1.50"    /* Laptop IP — change as needed */
+#define TEST_SERVER_IP   "192.168.68.109"  /* Laptop IP — change as needed */
 #endif
 #ifndef TEST_SERVER_PORT
 #define TEST_SERVER_PORT 9999
@@ -274,21 +274,48 @@ esp_err_t test_mode_run_camera(void)
     };
     inet_aton(TEST_SERVER_IP, &server_addr.sin_addr);
 
-    s_test_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s_test_sock < 0) {
-        ESP_LOGE(TAG, "Socket creation failed");
-        return ESP_FAIL;
-    }
+    /*
+     * TCP connect retry: must create a fresh socket per attempt.
+     * Once connect() fails on a stream socket, POSIX leaves it in
+     * an undefined state — you cannot retry on the same fd.
+     */
+    bool connected = false;
+    for (int i = 0; i < 15; i++) {
+        s_test_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (s_test_sock < 0) {
+            ESP_LOGE(TAG, "Socket creation failed: errno=%d", errno);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
 
-    /* Retry connection */
-    for (int i = 0; i < 10; i++) {
         int ret = connect(s_test_sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
-        if (ret == 0) break;
-        ESP_LOGW(TAG, "Connect retry %d/10...", i + 1);
+        if (ret == 0) {
+            connected = true;
+            ESP_LOGI(TAG, "Connected to test server!");
+            break;
+        }
+
+        ESP_LOGW(TAG, "Connect attempt %d/15 failed: errno=%d (%s)",
+                 i + 1, errno,
+                 errno == 111 ? "ECONNREFUSED — server not running?" :
+                 errno == 113 ? "EHOSTUNREACH — wrong IP?" :
+                 errno == 110 ? "ETIMEDOUT — firewall?" : "unknown");
+        close(s_test_sock);
+        s_test_sock = -1;
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
 
-    ESP_LOGI(TAG, "Connected to test server!");
+    if (!connected) {
+        ESP_LOGE(TAG, "╔═══════════════════════════════════════╗");
+        ESP_LOGE(TAG, "║  FAILED to connect to test server!    ║");
+        ESP_LOGE(TAG, "║  Check:                               ║");
+        ESP_LOGE(TAG, "║  1. Is test_server.py running?        ║");
+        ESP_LOGE(TAG, "║  2. Is IP correct? (%s)     ", TEST_SERVER_IP);
+        ESP_LOGE(TAG, "║  3. Firewall open on port %d?      ", TEST_SERVER_PORT);
+        ESP_LOGE(TAG, "║  4. Same WiFi network?                ║");
+        ESP_LOGE(TAG, "╚═══════════════════════════════════════╝");
+        return ESP_FAIL;
+    }
 
     /* ── Send HELLO ── */
     test_send_str("{\"board\":\"camera\",\"status\":\"hello\"}");
