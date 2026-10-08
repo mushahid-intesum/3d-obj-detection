@@ -17,13 +17,7 @@
 #include "spi_slave.h"
 #include "navigator.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 #include "inference.h"
-#ifdef __cplusplus
-}
-#endif
 
 #include "esp_log.h"
 #include "nvs_flash.h"

@@ -7,7 +7,7 @@ idf_component_register(
         "spi_slave.c"
         "correlation.c"
         "navigator.c"
-        "inference.cpp"
+        "inference.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

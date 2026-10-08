@@ -22,14 +22,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 #include "inference.h"
 #include "image_proc.h"
-#ifdef __cplusplus
-}
-#endif
 
 static const char *TAG = "cam_main";
 
