@@ -1,0 +1,18 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "motor.c"
+        "imu_uart.c"
+        "explorer.c"
+        "spi_slave.c"
+        "correlation.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        esp_timer
+        nvs_flash
+        esp_driver_gpio
+        esp_driver_ledc
+        esp_driver_uart
+        esp_driver_spi
+)
