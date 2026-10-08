@@ -6,6 +6,8 @@ idf_component_register(
         "explorer.c"
         "spi_slave.c"
         "correlation.c"
+        "navigator.c"
+        "inference.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES
