@@ -35,7 +35,7 @@ from datetime import datetime
 # ═══════════════════════════════════════════════
 #  Configuration
 # ═══════════════════════════════════════════════
-SERVER_PORT     = 9999
+SERVER_PORT     = 8888
 TIMEOUT_S       = 30          # per-test timeout
 IMG4_MAGIC      = 0x494D4734  # "IMG4"
 TEST_MAGIC      = b"TST\x01"
@@ -61,7 +61,6 @@ def WARN(msg):   print(f"  {YELLOW}[WARN]{RESET} {msg}")
 
 def recv_exact(sock, n, timeout=TIMEOUT_S):
     """Receive exactly n bytes with timeout."""
-    sock.settimeout(timeout)
     buf = bytearray()
     while len(buf) < n:
         chunk = sock.recv(n - len(buf))

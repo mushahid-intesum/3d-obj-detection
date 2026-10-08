@@ -2,13 +2,13 @@ menu "MCU ImageNav Configuration"
 
     config WIFI_SSID
         string "WiFi SSID"
-        default "YOUR_SSID"
+        default "Network"
         help
             SSID of the WiFi access point to connect to.
 
     config WIFI_PASSWORD
         string "WiFi Password"
-        default "YOUR_PASS"
+        default "Excels!or"
         help
             Password for the WiFi access point.
 
