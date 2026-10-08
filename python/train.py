@@ -5,21 +5,10 @@ train.py — Training loop for depth-aware ImageNav policy.
 Trains the TeacherModel with:
   1. Action loss:   Cross-entropy on BFS shortest-path supervision
   2. Depth loss:    MSE on MiDaS pseudo-depth maps (auxiliary)
-  3. Action weights: Class-balanced weighting (STOP is overrepresented)
-
-Usage:
-    # Single collection
-    python train.py --data data/room1_start_west
-
-    # Multiple collections (combined graph)
-    python train.py --data data/room1_start_west data/room1_start_east
-
-    # Resume training
-    python train.py --data data/room1_start_west --resume checkpoints/latest.pt
+  3. Action weights: Class-balanced weighting
 """
 
 import os
-import argparse
 import time
 
 import torch
@@ -29,6 +18,21 @@ from torch.utils.tensorboard import SummaryWriter
 
 from models import TeacherModel
 from dataset import get_dataloader, NUM_ACTIONS, ACTION_NAMES
+
+# ═══════════════════════════════════════════════
+#  Configuration
+# ═══════════════════════════════════════════════
+DATA_ROOT = "data"                     # Root dir — auto-discovers all collections
+EPOCHS            = 200
+BATCH_SIZE        = 128
+LR                = 3e-4
+DEPTH_WEIGHT      = 0.1               # Weight for depth auxiliary loss
+SAMPLES_PER_EPOCH = 10000
+SAVE_DIR          = "checkpoints"
+LOG_DIR           = "runs"
+RESUME_PATH       = None               # Set to "checkpoints/latest.pt" to resume
+DEVICE            = "cuda" if torch.cuda.is_available() else "cpu"
+# ═══════════════════════════════════════════════
 
 
 def compute_class_weights(loader, num_actions=NUM_ACTIONS, num_batches=20):
@@ -41,15 +45,16 @@ def compute_class_weights(loader, num_actions=NUM_ACTIONS, num_batches=20):
         for a in range(num_actions):
             counts[a] += (actions == a).sum().item()
 
-    # Inverse frequency, normalized
     total = counts.sum()
     weights = total / (num_actions * counts.clamp(min=1))
-    print(f"[Train] Action distribution: {dict(zip(ACTION_NAMES, counts.long().tolist()))}")
-    print(f"[Train] Class weights: {dict(zip(ACTION_NAMES, weights.numpy().round(2).tolist()))}")
+    print(f"[Train] Action distribution: "
+          f"{dict(zip(ACTION_NAMES, counts.long().tolist()))}")
+    print(f"[Train] Class weights: "
+          f"{dict(zip(ACTION_NAMES, weights.numpy().round(2).tolist()))}")
     return weights
 
 
-def train_epoch(model, loader, optimizer, device, depth_weight=0.1,
+def train_epoch(model, loader, optimizer, device, depth_weight,
                 class_weights=None):
     """Train for one epoch."""
     model.train()
@@ -101,7 +106,7 @@ def train_epoch(model, loader, optimizer, device, depth_weight=0.1,
 
 
 @torch.no_grad()
-def eval_epoch(model, loader, device, depth_weight=0.1):
+def eval_epoch(model, loader, device, depth_weight):
     """Evaluate for one epoch."""
     model.eval()
     total_loss = 0
@@ -155,47 +160,31 @@ def eval_epoch(model, loader, device, depth_weight=0.1):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train ImageNav policy")
-    parser.add_argument("--data", nargs="+", required=True,
-                        help="Collection directory path(s)")
-    parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--depth-weight", type=float, default=0.1,
-                        help="Weight for depth auxiliary loss")
-    parser.add_argument("--samples-per-epoch", type=int, default=10000)
-    parser.add_argument("--save-dir", default="checkpoints")
-    parser.add_argument("--resume", default=None, help="Checkpoint to resume")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available()
-                        else "cpu")
-    parser.add_argument("--log-dir", default="runs")
-    args = parser.parse_args()
-
-    device = torch.device(args.device)
-    os.makedirs(args.save_dir, exist_ok=True)
+    device = torch.device(DEVICE)
+    os.makedirs(SAVE_DIR, exist_ok=True)
 
     print(f"{'═' * 50}")
     print(f"  Depth-Aware ImageNav Training")
-    print(f"  Data:     {args.data}")
+    print(f"  Data:     {DATA_ROOT}")
     print(f"  Device:   {device}")
-    print(f"  Epochs:   {args.epochs}")
-    print(f"  Batch:    {args.batch_size}")
-    print(f"  LR:       {args.lr}")
-    print(f"  Depth w:  {args.depth_weight}")
+    print(f"  Epochs:   {EPOCHS}")
+    print(f"  Batch:    {BATCH_SIZE}")
+    print(f"  LR:       {LR}")
+    print(f"  Depth w:  {DEPTH_WEIGHT}")
     print(f"{'═' * 50}\n")
 
     # ── Data ──
     train_loader = get_dataloader(
-        args.data,
-        batch_size=args.batch_size,
-        samples_per_epoch=args.samples_per_epoch,
+        DATA_ROOT,
+        batch_size=BATCH_SIZE,
+        samples_per_epoch=SAMPLES_PER_EPOCH,
         augment=True,
         num_workers=4,
     )
     val_loader = get_dataloader(
-        args.data,
-        batch_size=args.batch_size,
-        samples_per_epoch=args.samples_per_epoch // 5,
+        DATA_ROOT,
+        batch_size=BATCH_SIZE,
+        samples_per_epoch=SAMPLES_PER_EPOCH // 5,
         augment=False,
         num_workers=2,
     )
@@ -214,10 +203,9 @@ def main():
         print(f"  {k:20s}: {v:>8,}")
 
     # ── Optimizer ──
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
-                                  weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=1e-6
+        optimizer, T_max=EPOCHS, eta_min=1e-6
     )
 
     # ── Class weights ──
@@ -226,8 +214,8 @@ def main():
     # ── Resume ──
     start_epoch = 0
     best_acc = 0.0
-    if args.resume and os.path.exists(args.resume):
-        ckpt = torch.load(args.resume, map_location=device)
+    if RESUME_PATH and os.path.exists(RESUME_PATH):
+        ckpt = torch.load(RESUME_PATH, map_location=device)
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch = ckpt.get("epoch", 0) + 1
@@ -235,29 +223,28 @@ def main():
         print(f"[Resume] from epoch {start_epoch}, best_acc={best_acc:.3f}")
 
     # ── TensorBoard ──
-    writer = SummaryWriter(args.log_dir)
+    writer = SummaryWriter(LOG_DIR)
 
     # ── Training Loop ──
     print(f"\n{'Epoch':>5} | {'Loss':>7} | {'A.Loss':>7} | {'D.Loss':>7} | "
           f"{'Acc':>6} | {'V.Acc':>6} | {'LR':>8} | {'Time':>5}")
     print("─" * 70)
 
-    for epoch in range(start_epoch, args.epochs):
+    for epoch in range(start_epoch, EPOCHS):
         t0 = time.time()
 
         # Train
         train_metrics = train_epoch(
             model, train_loader, optimizer, device,
-            depth_weight=args.depth_weight,
+            depth_weight=DEPTH_WEIGHT,
             class_weights=class_weights,
         )
 
         # Eval (every 5 epochs)
         val_metrics = None
-        if (epoch + 1) % 5 == 0 or epoch == args.epochs - 1:
+        if (epoch + 1) % 5 == 0 or epoch == EPOCHS - 1:
             val_metrics = eval_epoch(
-                model, val_loader, device,
-                depth_weight=args.depth_weight,
+                model, val_loader, device, depth_weight=DEPTH_WEIGHT,
             )
 
         scheduler.step()
@@ -265,14 +252,14 @@ def main():
         lr = scheduler.get_last_lr()[0]
 
         # Print
-        val_acc_str = f"{val_metrics['accuracy']:.3f}" if val_metrics else "  -  "
+        val_acc_str = (f"{val_metrics['accuracy']:.3f}"
+                       if val_metrics else "  -  ")
         print(f"{epoch:5d} | {train_metrics['loss']:7.4f} | "
               f"{train_metrics['action_loss']:7.4f} | "
               f"{train_metrics['depth_loss']:7.4f} | "
               f"{train_metrics['accuracy']:.3f} | {val_acc_str} | "
               f"{lr:.2e} | {dt:5.1f}s")
 
-        # Per-action accuracy
         if val_metrics and "per_action_acc" in val_metrics:
             parts = [f"{k}={v:.2f}" for k, v in
                      val_metrics["per_action_acc"].items()]
@@ -284,10 +271,12 @@ def main():
                           train_metrics["action_loss"], epoch)
         writer.add_scalar("train/depth_loss",
                           train_metrics["depth_loss"], epoch)
-        writer.add_scalar("train/accuracy", train_metrics["accuracy"], epoch)
+        writer.add_scalar("train/accuracy",
+                          train_metrics["accuracy"], epoch)
         writer.add_scalar("lr", lr, epoch)
         if val_metrics:
-            writer.add_scalar("val/accuracy", val_metrics["accuracy"], epoch)
+            writer.add_scalar("val/accuracy",
+                              val_metrics["accuracy"], epoch)
             writer.add_scalar("val/loss", val_metrics["loss"], epoch)
 
         # Save checkpoint
@@ -304,12 +293,12 @@ def main():
             "val_metrics": val_metrics,
         }
 
-        torch.save(ckpt, os.path.join(args.save_dir, "latest.pt"))
+        torch.save(ckpt, os.path.join(SAVE_DIR, "latest.pt"))
         if is_best:
-            torch.save(ckpt, os.path.join(args.save_dir, "best.pt"))
+            torch.save(ckpt, os.path.join(SAVE_DIR, "best.pt"))
             print(f"        ★ New best: {best_acc:.3f}")
 
-        # Save stripped model (no depth head) every 50 epochs
+        # Save stripped model every 50 epochs
         if (epoch + 1) % 50 == 0:
             deploy_model = TeacherModel(
                 feat_dim=128, cue_dim=256,
@@ -318,7 +307,7 @@ def main():
             deploy_model.load_state_dict(model.state_dict())
             deploy_model.strip_depth_head()
             deploy_path = os.path.join(
-                args.save_dir, f"deploy_epoch{epoch + 1}.pt"
+                SAVE_DIR, f"deploy_epoch{epoch + 1}.pt"
             )
             torch.save(deploy_model.state_dict(), deploy_path)
             print(f"        Saved deploy model: {deploy_path}")
@@ -329,15 +318,13 @@ def main():
     print(f"\n{'═' * 50}")
     print(f"  Training complete!")
     print(f"  Best validation accuracy: {best_acc:.3f}")
-    print(f"  Checkpoints: {args.save_dir}/")
+    print(f"  Checkpoints: {SAVE_DIR}/")
     print(f"{'═' * 50}")
 
-    # Strip and save final deployment model
     model.strip_depth_head()
-    final_path = os.path.join(args.save_dir, "deploy_final.pt")
+    final_path = os.path.join(SAVE_DIR, "deploy_final.pt")
     torch.save(model.state_dict(), final_path)
     print(f"  Deployment model: {final_path}")
-    print(f"  → Next: python quantize_export.py --model {final_path}")
 
 
 if __name__ == "__main__":

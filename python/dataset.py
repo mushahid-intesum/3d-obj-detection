@@ -159,6 +159,51 @@ class NavGraph:
         return depths[idx]
 
 
+def discover_collections(data_root):
+    """
+    Auto-discover all collection directories under a root.
+
+    Scans for subdirectories containing metadata.json.
+    Works with structure:
+        data/
+          room1_start_west/
+            metadata.json
+            images/
+            depth/
+          room1_start_east/
+            metadata.json
+            ...
+
+    Returns list of absolute paths to collection directories.
+    """
+    collections = []
+
+    # Check if data_root itself is a collection
+    if os.path.isfile(os.path.join(data_root, "metadata.json")):
+        collections.append(data_root)
+        return collections
+
+    # Scan subdirectories
+    for entry in sorted(os.listdir(data_root)):
+        subdir = os.path.join(data_root, entry)
+        if os.path.isdir(subdir) and os.path.isfile(
+            os.path.join(subdir, "metadata.json")
+        ):
+            collections.append(subdir)
+
+    if not collections:
+        raise FileNotFoundError(
+            f"No collections found under {data_root}. "
+            f"Expected subdirectories with metadata.json."
+        )
+
+    print(f"[Discover] Found {len(collections)} collections in {data_root}:")
+    for c in collections:
+        print(f"  - {os.path.basename(c)}")
+
+    return collections
+
+
 class ImageNavDataset(Dataset):
     """
     PyTorch Dataset for depth-aware image-goal navigation.
@@ -168,17 +213,16 @@ class ImageNavDataset(Dataset):
     (obs, goal, action, depth) for training.
     """
 
-    def __init__(self, collection_dirs, samples_per_epoch=10000,
+    def __init__(self, data_root, samples_per_epoch=10000,
                  img_size=48, augment=True):
         """
         Args:
-            collection_dirs: List of collection directory paths, or single path.
+            data_root: Root data directory (auto-discovers all collections).
             samples_per_epoch: Number of (start, goal) pairs per epoch.
             img_size: Image size (NxN).
             augment: Whether to apply data augmentation.
         """
-        if isinstance(collection_dirs, str):
-            collection_dirs = [collection_dirs]
+        collection_dirs = discover_collections(data_root)
 
         self.graphs = []
         self.all_nodes = []  # (graph_idx, node_key) tuples
@@ -262,11 +306,15 @@ class ImageNavDataset(Dataset):
         }
 
 
-def get_dataloader(collection_dirs, batch_size=128, samples_per_epoch=10000,
+def get_dataloader(data_root, batch_size=128, samples_per_epoch=10000,
                    augment=True, num_workers=4):
-    """Create DataLoader for ImageNav training."""
+    """Create DataLoader for ImageNav training.
+
+    Args:
+        data_root: Root data directory (auto-discovers all collections).
+    """
     ds = ImageNavDataset(
-        collection_dirs,
+        data_root,
         samples_per_epoch=samples_per_epoch,
         augment=augment,
     )
@@ -281,22 +329,19 @@ def get_dataloader(collection_dirs, batch_size=128, samples_per_epoch=10000,
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        print("Usage: python dataset.py <collection_dir>")
-        sys.exit(1)
+    # Quick test — point at data root
+    DATA_ROOT = "data"
 
-    graph = NavGraph(sys.argv[1])
+    collections = discover_collections(DATA_ROOT)
+    for cdir in collections:
+        graph = NavGraph(cdir)
+        keys = graph.get_all_node_keys()
+        if len(keys) >= 2:
+            s, g = keys[0], keys[-1]
+            action = graph.shortest_path_action(s, g)
+            print(f"  Shortest path {s} → {g}: {ACTION_NAMES[action]}")
 
-    # Test shortest path
-    keys = graph.get_all_node_keys()
-    if len(keys) >= 2:
-        s, g = keys[0], keys[-1]
-        action = graph.shortest_path_action(s, g)
-        print(f"\nShortest path {s} → {g}: {ACTION_NAMES[action]}")
-
-    # Test dataset
-    ds = ImageNavDataset(sys.argv[1], samples_per_epoch=100, augment=False)
+    ds = ImageNavDataset(DATA_ROOT, samples_per_epoch=100, augment=False)
     sample = ds[0]
     print(f"\nSample:")
     for k, v in sample.items():

@@ -4,20 +4,22 @@ gen_depth.py — Generate MiDaS depth maps for collected images.
 
 Reads images from a collection directory, runs MiDaS Small,
 and saves depth maps as .npy files alongside the images.
-
-Usage:
-    python gen_depth.py --data data/room1_start_west
-    python gen_depth.py --data data/  # process all subdirectories
 """
 
 import os
 import glob
-import argparse
 
 import numpy as np
 import torch
 from PIL import Image
-from torchvision.transforms import Compose, Resize, ToTensor, Normalize
+
+# ═══════════════════════════════════════════════
+#  Configuration
+# ═══════════════════════════════════════════════
+DATA_DIR   = "data/room1_start_west"   # Single collection, or parent dir
+IMG_SIZE   = 48                        # Output depth map size (NxN)
+DEVICE     = "cuda" if torch.cuda.is_available() else "cpu"
+# ═══════════════════════════════════════════════
 
 
 def load_midas(device):
@@ -26,7 +28,6 @@ def load_midas(device):
     model = torch.hub.load("intel-isl/MiDaS", "MiDaS_small", trust_repo=True)
     model.to(device).eval()
 
-    # MiDaS Small transforms
     transforms = torch.hub.load("intel-isl/MiDaS", "transforms", trust_repo=True)
     transform = transforms.small_transform
 
@@ -34,7 +35,7 @@ def load_midas(device):
     return model, transform
 
 
-def process_directory(img_dir, model, transform, device, img_size=48):
+def process_directory(img_dir, model, transform, device, img_size):
     """Generate depth maps for all images in a directory."""
     depth_dir = os.path.join(os.path.dirname(img_dir), "depth")
     os.makedirs(depth_dir, exist_ok=True)
@@ -76,7 +77,6 @@ def process_directory(img_dir, model, transform, device, img_size=48):
         else:
             depth = np.zeros_like(depth)
 
-        # Save as float32 numpy array
         np.save(depth_path, depth.astype(np.float32))
         count += 1
 
@@ -88,34 +88,25 @@ def process_directory(img_dir, model, transform, device, img_size=48):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate MiDaS depth maps")
-    parser.add_argument("--data", required=True,
-                        help="Path to collection dir or parent dir")
-    parser.add_argument("--img-size", type=int, default=48,
-                        help="Output depth map size (NxN)")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available()
-                        else "cpu")
-    args = parser.parse_args()
-
-    device = torch.device(args.device)
+    device = torch.device(DEVICE)
     print(f"Device: {device}")
 
     model, transform = load_midas(device)
 
-    # Check if data path contains images/ subdirectory (single collection)
-    img_dir = os.path.join(args.data, "images")
+    # Check if DATA_DIR contains images/ subdirectory (single collection)
+    img_dir = os.path.join(DATA_DIR, "images")
     if os.path.isdir(img_dir):
-        print(f"\nProcessing: {args.data}")
-        process_directory(img_dir, model, transform, device, args.img_size)
+        print(f"\nProcessing: {DATA_DIR}")
+        process_directory(img_dir, model, transform, device, IMG_SIZE)
     else:
         # Process all subdirectories
         total = 0
-        for subdir in sorted(os.listdir(args.data)):
-            sub_img_dir = os.path.join(args.data, subdir, "images")
+        for subdir in sorted(os.listdir(DATA_DIR)):
+            sub_img_dir = os.path.join(DATA_DIR, subdir, "images")
             if os.path.isdir(sub_img_dir):
                 print(f"\nProcessing: {subdir}")
                 total += process_directory(
-                    sub_img_dir, model, transform, device, args.img_size
+                    sub_img_dir, model, transform, device, IMG_SIZE
                 )
         print(f"\nTotal: {total} depth maps generated")
 

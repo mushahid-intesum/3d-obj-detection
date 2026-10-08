@@ -4,9 +4,6 @@ receiver.py — TCP client for Phase 1/2 data collection.
 
 Connects to ESP32-S3, receives IMG3 packets (JPEG + IMU heading),
 decodes to 48×48 RGB, and saves organized data with metadata.
-
-Usage:
-    python receiver.py --ip 192.168.1.X --room room1 --start-dir west
 """
 
 import socket
@@ -14,7 +11,6 @@ import struct
 import time
 import os
 import json
-import argparse
 from io import BytesIO
 from datetime import datetime
 
@@ -27,10 +23,22 @@ try:
 except ImportError:
     HAS_CV2 = False
 
-# ─── Protocol (must match wifi_stream.h v3) ───
+# ═══════════════════════════════════════════════
+#  Configuration — edit these before running
+# ═══════════════════════════════════════════════
+ESP32_IP        = "192.168.1.100"   # ESP32 IP (check serial monitor)
+ESP32_PORT      = 8888
+ROOM            = "room1"           # Room name
+START_DIR       = "west"            # Starting direction
+OUTPUT_DIR      = "data"            # Base output directory
+IMG_SIZE        = 48                # Resize to NxN
+SHOW_PREVIEW    = True              # Live OpenCV preview
+PHOTOS_PER_DIR  = 3                 # Must match ESP32 COLLECT_PHOTOS_PER_DIR
+# ═══════════════════════════════════════════════
+
+# Protocol (must match wifi_stream.h v3)
 MAGIC = 0x494D4733           # "IMG3"
 HEADER_SIZE = 17             # 4+4+1+4+4
-IMG_SIZE = 48
 
 DIR_NAMES = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 
@@ -47,39 +55,26 @@ def recv_exact(sock, n):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ESP32 data collection receiver")
-    parser.add_argument("--ip", required=True, help="ESP32 IP address")
-    parser.add_argument("--port", type=int, default=8888)
-    parser.add_argument("--room", required=True, help="Room name (e.g. room1)")
-    parser.add_argument("--start-dir", required=True,
-                        help="Starting direction (e.g. west, north)")
-    parser.add_argument("--output", default="data", help="Output base directory")
-    parser.add_argument("--img-size", type=int, default=IMG_SIZE,
-                        help="Resize images to NxN")
-    parser.add_argument("--no-preview", action="store_true",
-                        help="Disable live OpenCV preview")
-    args = parser.parse_args()
-
     # Create output directory
-    run_name = f"{args.room}_start_{args.start_dir}"
-    out_dir = os.path.join(args.output, run_name)
+    run_name = f"{ROOM}_start_{START_DIR}"
+    out_dir = os.path.join(OUTPUT_DIR, run_name)
     img_dir = os.path.join(out_dir, "images")
     os.makedirs(img_dir, exist_ok=True)
 
     print(f"Output: {out_dir}")
-    print(f"Connecting to {args.ip}:{args.port}...")
+    print(f"Connecting to {ESP32_IP}:{ESP32_PORT}...")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(15)
-    sock.connect((args.ip, args.port))
+    sock.connect((ESP32_IP, ESP32_PORT))
     print("Connected!\n")
 
     # Metadata
     metadata = {
-        "room": args.room,
-        "start_direction": args.start_dir,
+        "room": ROOM,
+        "start_direction": START_DIR,
         "run_name": run_name,
-        "img_size": args.img_size,
+        "img_size": IMG_SIZE,
         "created": datetime.now().isoformat(),
         "frames": [],
     }
@@ -87,7 +82,6 @@ def main():
     frame_count = 0
     position = 0
     last_dir = -1
-    photos_per_dir = 3       # must match COLLECT_PHOTOS_PER_DIR on ESP32
     t_start = time.time()
 
     try:
@@ -111,12 +105,11 @@ def main():
 
             # ── Decode & resize ──
             img = Image.open(BytesIO(jpeg_data)).convert("RGB")
-            img_resized = img.resize((args.img_size, args.img_size), Image.LANCZOS)
+            img_resized = img.resize((IMG_SIZE, IMG_SIZE), Image.LANCZOS)
 
             # ── Save image ──
             dir_name = DIR_NAMES[dir_index]
-            # Photo index within this direction (0, 1, 2)
-            photo_idx = frame_count % photos_per_dir
+            photo_idx = frame_count % PHOTOS_PER_DIR
             filename = f"pos{position:03d}_{dir_name}_{photo_idx}.jpg"
             filepath = os.path.join(img_dir, filename)
             img_resized.save(filepath, quality=95)
@@ -138,13 +131,13 @@ def main():
             # ── Console output ──
             elapsed = time.time() - t_start
             fps = frame_count / elapsed if elapsed > 0 else 0
-            if frame_count % photos_per_dir == 0:
+            if frame_count % PHOTOS_PER_DIR == 0:
                 print(f"  pos{position:03d}_{dir_name}: "
                       f"heading={heading_deg:6.1f}° "
                       f"({frame_count} frames, {fps:.1f} fps)")
 
             # ── Live preview ──
-            if HAS_CV2 and not args.no_preview:
+            if HAS_CV2 and SHOW_PREVIEW:
                 arr = np.array(img_resized)
                 display = cv2.resize(arr, (384, 384),
                                      interpolation=cv2.INTER_NEAREST)
@@ -163,7 +156,7 @@ def main():
         print(f"\nConnection lost: {e}")
     finally:
         sock.close()
-        if HAS_CV2 and not args.no_preview:
+        if HAS_CV2 and SHOW_PREVIEW:
             cv2.destroyAllWindows()
 
         # Save metadata
