@@ -43,10 +43,10 @@ static const char *TAG = "mot_test";
 
 /* WiFi config — must match Camera Board's network */
 #ifndef TEST_WIFI_SSID
-#define TEST_WIFI_SSID     "YOUR_SSID"
+#define TEST_WIFI_SSID     "Network"
 #endif
 #ifndef TEST_WIFI_PASSWORD
-#define TEST_WIFI_PASSWORD "YOUR_PASS"
+#define TEST_WIFI_PASSWORD "Excels!or"
 #endif
 
 #define TEST_MAGIC_0 'T'

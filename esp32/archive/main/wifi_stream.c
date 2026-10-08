@@ -22,10 +22,10 @@ static const char *TAG = "wifi_stream";
 
 /* !! SET YOUR WIFI CREDENTIALS HERE !! */
 #ifndef CONFIG_WIFI_SSID
-#define CONFIG_WIFI_SSID     "YOUR_SSID"      /* <-- CHANGE THIS */
+#define CONFIG_WIFI_SSID     "Network"      /* <-- CHANGE THIS */
 #endif
 #ifndef CONFIG_WIFI_PASSWORD
-#define CONFIG_WIFI_PASSWORD "YOUR_PASS"       /* <-- CHANGE THIS */
+#define CONFIG_WIFI_PASSWORD "Excels!or"       /* <-- CHANGE THIS */
 #endif
 
 /* Event group for WiFi connection state */

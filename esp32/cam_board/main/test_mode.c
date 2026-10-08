@@ -31,7 +31,7 @@ static const char *TAG = "cam_test";
 
 /* ── Test server connection ── */
 #ifndef TEST_SERVER_IP
-#define TEST_SERVER_IP   "192.168.68.109"  /* Laptop IP — change as needed */
+#define TEST_SERVER_IP   "192.168.68.108"  /* Laptop IP — change as needed */
 #endif
 #ifndef TEST_SERVER_PORT
 #define TEST_SERVER_PORT 9999

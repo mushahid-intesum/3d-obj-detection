@@ -19,10 +19,10 @@
 static const char *TAG = "wifi_stream";
 
 #ifndef CONFIG_WIFI_SSID
-#define CONFIG_WIFI_SSID     "YOUR_SSID"
+#define CONFIG_WIFI_SSID     "Network"
 #endif
 #ifndef CONFIG_WIFI_PASSWORD
-#define CONFIG_WIFI_PASSWORD "YOUR_PASS"
+#define CONFIG_WIFI_PASSWORD "Excels!or"
 #endif
 
 static EventGroupHandle_t s_wifi_event_group;
