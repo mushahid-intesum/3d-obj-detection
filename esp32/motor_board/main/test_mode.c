@@ -33,9 +33,19 @@
 
 static const char *TAG = "mot_test";
 
+<<<<<<< HEAD
 /* ── Test server config — edit here ── */
 #define TEST_SERVER_IP     "192.168.68.108"
 #define TEST_SERVER_PORT   9999
+=======
+/* ── Test server config ── */
+#ifndef TEST_SERVER_IP
+#define TEST_SERVER_IP   "192.168.68.108"
+#endif
+#ifndef TEST_SERVER_PORT
+#define TEST_SERVER_PORT 9999
+#endif
+>>>>>>> 03f063b (moha)
 
 /* WiFi config — must match Camera Board's network */
 #define TEST_WIFI_SSID     "YOUR_SSID"
