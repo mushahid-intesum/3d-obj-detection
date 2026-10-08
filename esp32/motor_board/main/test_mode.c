@@ -33,21 +33,13 @@
 
 static const char *TAG = "mot_test";
 
-/* ── Test server config ── */
-#ifndef TEST_SERVER_IP
-#define TEST_SERVER_IP   "192.168.68.109"
-#endif
-#ifndef TEST_SERVER_PORT
-#define TEST_SERVER_PORT 9999
-#endif
+/* ── Test server config — edit here ── */
+#define TEST_SERVER_IP     "192.168.68.108"
+#define TEST_SERVER_PORT   9999
 
 /* WiFi config — must match Camera Board's network */
-#ifndef TEST_WIFI_SSID
-#define TEST_WIFI_SSID     "Network"
-#endif
-#ifndef TEST_WIFI_PASSWORD
-#define TEST_WIFI_PASSWORD "Excels!or"
-#endif
+#define TEST_WIFI_SSID     "YOUR_SSID"
+#define TEST_WIFI_PASSWORD "YOUR_PASS"
 
 #define TEST_MAGIC_0 'T'
 #define TEST_MAGIC_1 'S'
