@@ -7,7 +7,7 @@
  *   [2B] payload_len (uint16 LE)
  *   [N]  payload (UTF-8 JSON)
  *
- * Uses cJSON for parsing (bundled with ESP-IDF).
+ * Uses manual JSON formatting — no cJSON dependency required.
  */
 #include "test_mode.h"
 #include "config.h"
@@ -16,11 +16,12 @@
 #include "wifi_stream.h"
 
 #include "esp_log.h"
-#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -69,24 +70,24 @@ static esp_err_t recv_exact(int sock, void *buf, size_t len)
     return ESP_OK;
 }
 
-static esp_err_t test_send_json(cJSON *json)
+static esp_err_t test_send_str(const char *json_str)
 {
-    char *str = cJSON_PrintUnformatted(json);
-    if (!str) return ESP_FAIL;
-
-    uint16_t payload_len = (uint16_t)strlen(str);
+    uint16_t payload_len = (uint16_t)strlen(json_str);
     uint8_t header[6] = {TEST_MAGIC_0, TEST_MAGIC_1, TEST_MAGIC_2, TEST_MAGIC_3, 0, 0};
     memcpy(&header[4], &payload_len, 2);
 
     esp_err_t ret = send_all(s_test_sock, header, 6);
     if (ret == ESP_OK) {
-        ret = send_all(s_test_sock, str, payload_len);
+        ret = send_all(s_test_sock, json_str, payload_len);
     }
-    cJSON_free(str);
     return ret;
 }
 
-static cJSON *test_recv_json(void)
+/**
+ * Receive one test protocol message.
+ * Returns dynamically allocated JSON string (caller must free), or NULL.
+ */
+static char *test_recv_str(void)
 {
     uint8_t header[6];
     if (recv_exact(s_test_sock, header, 6) != ESP_OK) return NULL;
@@ -115,10 +116,27 @@ static cJSON *test_recv_json(void)
         return NULL;
     }
     buf[payload_len] = '\0';
+    return buf;
+}
 
-    cJSON *json = cJSON_Parse(buf);
-    free(buf);
-    return json;
+/**
+ * Extract the "cmd" value from a JSON string like {"cmd":"xxx", ...}.
+ * Returns pointer into the original string (not a copy). Only valid while
+ * the source string is alive. Writes a \0 over the closing quote.
+ */
+static char *json_get_cmd(char *json)
+{
+    char *p = strstr(json, "\"cmd\"");
+    if (!p) return NULL;
+    p = strchr(p + 4, ':');
+    if (!p) return NULL;
+    p = strchr(p, '"');
+    if (!p) return NULL;
+    p++;  /* skip opening quote */
+    char *end = strchr(p, '"');
+    if (!end) return NULL;
+    *end = '\0';
+    return p;
 }
 
 /* ── Send IMG4 packet directly to test socket ── */
@@ -149,28 +167,20 @@ static esp_err_t send_img4_to_test(uint32_t frame_id, uint32_t timestep,
  *  Test command handlers
  * ══════════════════════════════════════════════════════════════════════════ */
 
-static void handle_t1_ok(cJSON *cmd)
+static void handle_t1_ok(void)
 {
     ESP_LOGI(TAG, "T1: Connectivity confirmed by server");
-    cJSON *resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp, "status", "ok");
-    cJSON_AddStringToObject(resp, "board", "camera");
-    test_send_json(resp);
-    cJSON_Delete(resp);
+    test_send_str("{\"status\":\"ok\",\"board\":\"camera\"}");
 }
 
-static void handle_t2_capture(cJSON *cmd)
+static void handle_t2_capture(void)
 {
     ESP_LOGI(TAG, "T2: Capturing frame...");
 
     camera_fb_t *fb = camera_capture_frame();
     if (!fb) {
         ESP_LOGE(TAG, "T2: Camera capture failed!");
-        cJSON *resp = cJSON_CreateObject();
-        cJSON_AddStringToObject(resp, "status", "fail");
-        cJSON_AddStringToObject(resp, "error", "camera_capture_failed");
-        test_send_json(resp);
-        cJSON_Delete(resp);
+        test_send_str("{\"status\":\"fail\",\"error\":\"camera_capture_failed\"}");
         return;
     }
 
@@ -181,14 +191,14 @@ static void handle_t2_capture(cJSON *cmd)
     camera_release_frame(fb);
 
     /* Wait for T2 ACK from server */
-    cJSON *ack = test_recv_json();
+    char *ack = test_recv_str();
     if (ack) {
         ESP_LOGI(TAG, "T2: Server ACK received");
-        cJSON_Delete(ack);
+        free(ack);
     }
 }
 
-static void handle_t3_spi_send(cJSON *cmd)
+static void handle_t3_spi_send(void)
 {
     ESP_LOGI(TAG, "T3: Sending dummy SPI exchange to motor board...");
 
@@ -206,7 +216,7 @@ static void handle_t3_spi_send(cJSON *cmd)
     /* Motor board reports result to server directly */
 }
 
-static void handle_t5_full_cycle(cJSON *cmd)
+static void handle_t5_full_cycle(void)
 {
     ESP_LOGI(TAG, "T5: Full pipeline — capture + SPI + stream...");
 
@@ -214,11 +224,7 @@ static void handle_t5_full_cycle(cJSON *cmd)
     camera_fb_t *fb = camera_capture_frame();
     if (!fb) {
         ESP_LOGE(TAG, "T5: Capture failed");
-        cJSON *resp = cJSON_CreateObject();
-        cJSON_AddStringToObject(resp, "status", "fail");
-        cJSON_AddStringToObject(resp, "error", "capture_failed");
-        test_send_json(resp);
-        cJSON_Delete(resp);
+        test_send_str("{\"status\":\"fail\",\"error\":\"capture_failed\"}");
         return;
     }
 
@@ -240,12 +246,11 @@ static void handle_t5_full_cycle(cJSON *cmd)
     camera_release_frame(fb);
 
     /* 4. Send OK via test channel */
-    cJSON *resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp, "status", "ok");
-    cJSON_AddNumberToObject(resp, "action", action);
-    cJSON_AddNumberToObject(resp, "heading", heading);
-    test_send_json(resp);
-    cJSON_Delete(resp);
+    char resp[128];
+    snprintf(resp, sizeof(resp),
+             "{\"status\":\"ok\",\"action\":%d,\"heading\":%.1f}",
+             action, heading);
+    test_send_str(resp);
 
     ESP_LOGI(TAG, "T5: Full pipeline complete");
 }
@@ -286,46 +291,42 @@ esp_err_t test_mode_run_camera(void)
     ESP_LOGI(TAG, "Connected to test server!");
 
     /* ── Send HELLO ── */
-    cJSON *hello = cJSON_CreateObject();
-    cJSON_AddStringToObject(hello, "board", "camera");
-    cJSON_AddStringToObject(hello, "status", "hello");
-    test_send_json(hello);
-    cJSON_Delete(hello);
+    test_send_str("{\"board\":\"camera\",\"status\":\"hello\"}");
 
     /* ── Process test commands ── */
     while (1) {
-        cJSON *cmd = test_recv_json();
-        if (!cmd) {
+        char *raw = test_recv_str();
+        if (!raw) {
             ESP_LOGW(TAG, "No more commands — disconnected or done");
             break;
         }
 
-        cJSON *cmd_field = cJSON_GetObjectItem(cmd, "cmd");
-        if (!cmd_field || !cJSON_IsString(cmd_field)) {
-            ESP_LOGW(TAG, "Invalid command");
-            cJSON_Delete(cmd);
+        char *cmd = json_get_cmd(raw);
+        if (!cmd) {
+            ESP_LOGW(TAG, "Invalid command JSON");
+            free(raw);
             continue;
         }
 
-        const char *cmd_str = cmd_field->valuestring;
-        ESP_LOGI(TAG, "Command: %s", cmd_str);
+        ESP_LOGI(TAG, "Command: %s", cmd);
 
-        if (strcmp(cmd_str, "t1_ok") == 0) {
-            handle_t1_ok(cmd);
-        } else if (strcmp(cmd_str, "t2_capture") == 0) {
-            handle_t2_capture(cmd);
-        } else if (strcmp(cmd_str, "t3_spi_send") == 0) {
-            handle_t3_spi_send(cmd);
-        } else if (strcmp(cmd_str, "t5_full_cycle") == 0) {
-            handle_t5_full_cycle(cmd);
-        } else if (strcmp(cmd_str, "done") == 0) {
+        if (strcmp(cmd, "t1_ok") == 0) {
+            handle_t1_ok();
+        } else if (strcmp(cmd, "t2_capture") == 0) {
+            handle_t2_capture();
+        } else if (strcmp(cmd, "t3_spi_send") == 0) {
+            handle_t3_spi_send();
+        } else if (strcmp(cmd, "t5_full_cycle") == 0) {
+            handle_t5_full_cycle();
+        } else if (strcmp(cmd, "done") == 0) {
             ESP_LOGI(TAG, "Test suite complete!");
+            free(raw);
             break;
         } else {
-            ESP_LOGW(TAG, "Unknown command: %s", cmd_str);
+            ESP_LOGW(TAG, "Unknown command: %s", cmd);
         }
 
-        cJSON_Delete(cmd);
+        free(raw);
     }
 
     close(s_test_sock);

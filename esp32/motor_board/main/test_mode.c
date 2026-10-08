@@ -5,9 +5,9 @@
  *
  * Note: Motor Board normally has NO WiFi. For test mode we add a
  * minimal WiFi STA client to connect to the test server.
- * This uses the same WiFi AP as the Camera Board.
  *
  * Protocol: Same as Camera Board — TST\x01 + 2B len + JSON payload.
+ * Uses manual JSON formatting — no cJSON dependency required.
  */
 #include "test_mode.h"
 #include "config.h"
@@ -19,12 +19,13 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
-#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -83,24 +84,20 @@ static esp_err_t recv_exact(int sock, void *buf, size_t len)
     return ESP_OK;
 }
 
-static esp_err_t test_send_json(cJSON *json)
+static esp_err_t test_send_str(const char *json_str)
 {
-    char *str = cJSON_PrintUnformatted(json);
-    if (!str) return ESP_FAIL;
-
-    uint16_t payload_len = (uint16_t)strlen(str);
+    uint16_t payload_len = (uint16_t)strlen(json_str);
     uint8_t header[6] = {TEST_MAGIC_0, TEST_MAGIC_1, TEST_MAGIC_2, TEST_MAGIC_3, 0, 0};
     memcpy(&header[4], &payload_len, 2);
 
     esp_err_t ret = send_all(s_test_sock, header, 6);
     if (ret == ESP_OK) {
-        ret = send_all(s_test_sock, str, payload_len);
+        ret = send_all(s_test_sock, json_str, payload_len);
     }
-    cJSON_free(str);
     return ret;
 }
 
-static cJSON *test_recv_json(void)
+static char *test_recv_str(void)
 {
     uint8_t header[6];
     if (recv_exact(s_test_sock, header, 6) != ESP_OK) return NULL;
@@ -124,10 +121,43 @@ static cJSON *test_recv_json(void)
         return NULL;
     }
     buf[payload_len] = '\0';
+    return buf;
+}
 
-    cJSON *json = cJSON_Parse(buf);
-    free(buf);
-    return json;
+/**
+ * Extract "cmd" value from JSON string. Writes \0 over closing quote.
+ */
+static char *json_get_cmd(char *json)
+{
+    char *p = strstr(json, "\"cmd\"");
+    if (!p) return NULL;
+    p = strchr(p + 4, ':');
+    if (!p) return NULL;
+    p = strchr(p, '"');
+    if (!p) return NULL;
+    p++;
+    char *end = strchr(p, '"');
+    if (!end) return NULL;
+    *end = '\0';
+    return p;
+}
+
+/**
+ * Extract integer value for a given key from JSON string.
+ * Returns -1 if not found.
+ */
+static int json_get_int(const char *json, const char *key)
+{
+    /* Build search pattern: "key": */
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return -1;
+    p = strchr(p + strlen(pattern), ':');
+    if (!p) return -1;
+    p++;
+    while (*p == ' ') p++;
+    return atoi(p);
 }
 
 /* ── WiFi for test mode (Motor Board normally has no WiFi) ── */
@@ -185,17 +215,13 @@ static esp_err_t test_wifi_init(void)
  *  Test command handlers
  * ══════════════════════════════════════════════════════════════════════════ */
 
-static void handle_t1_ok(cJSON *cmd)
+static void handle_t1_ok(void)
 {
     ESP_LOGI(TAG, "T1: Connectivity confirmed");
-    cJSON *resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp, "status", "ok");
-    cJSON_AddStringToObject(resp, "board", "motor");
-    test_send_json(resp);
-    cJSON_Delete(resp);
+    test_send_str("{\"status\":\"ok\",\"board\":\"motor\"}");
 }
 
-static void handle_t3_spi_recv(cJSON *cmd)
+static void handle_t3_spi_recv(void)
 {
     ESP_LOGI(TAG, "T3: Waiting for SPI transaction from camera board...");
 
@@ -208,22 +234,21 @@ static void handle_t3_spi_recv(cJSON *cmd)
     /* Wait for camera board's SPI transaction */
     esp_err_t ret = spi_slave_receive(&obstacle, &msg_type, NULL, 10000);
 
-    cJSON *resp = cJSON_CreateObject();
+    char resp[128];
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "T3: SPI received — obstacle=%d msg_type=%d", obstacle, msg_type);
-        cJSON_AddStringToObject(resp, "status", "ok");
-        cJSON_AddNumberToObject(resp, "obstacle_flag", obstacle);
-        cJSON_AddNumberToObject(resp, "msg_type", msg_type);
+        snprintf(resp, sizeof(resp),
+                 "{\"status\":\"ok\",\"obstacle_flag\":%d,\"msg_type\":%d}",
+                 obstacle, msg_type);
     } else {
         ESP_LOGE(TAG, "T3: SPI receive failed/timeout: 0x%x", ret);
-        cJSON_AddStringToObject(resp, "status", "fail");
-        cJSON_AddStringToObject(resp, "error", "spi_timeout");
+        snprintf(resp, sizeof(resp),
+                 "{\"status\":\"fail\",\"error\":\"spi_timeout\"}");
     }
-    test_send_json(resp);
-    cJSON_Delete(resp);
+    test_send_str(resp);
 }
 
-static void handle_t4_imu_read(cJSON *cmd)
+static void handle_t4_imu_read(void)
 {
     ESP_LOGI(TAG, "T4: Reading IMU heading...");
 
@@ -238,15 +263,14 @@ static void handle_t4_imu_read(cJSON *cmd)
 
     ESP_LOGI(TAG, "T4: IMU heading=%.1f° ready=%d", heading, ready);
 
-    cJSON *resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp, "status", "ok");
-    cJSON_AddNumberToObject(resp, "heading", heading);
-    cJSON_AddBoolToObject(resp, "imu_ready", ready);
-    test_send_json(resp);
-    cJSON_Delete(resp);
+    char resp[128];
+    snprintf(resp, sizeof(resp),
+             "{\"status\":\"ok\",\"heading\":%.2f,\"imu_ready\":%s}",
+             heading, ready ? "true" : "false");
+    test_send_str(resp);
 }
 
-static void handle_t5_spi_respond(cJSON *cmd)
+static void handle_t5_spi_respond(void)
 {
     ESP_LOGI(TAG, "T5: Preparing SPI response with current IMU heading...");
 
@@ -269,13 +293,13 @@ static void handle_t5_spi_respond(cJSON *cmd)
     /* No response to server needed — camera reports the combined result */
 }
 
-static void handle_t6_motor(cJSON *cmd)
+static void handle_t6_motor(const char *raw_json)
 {
-    cJSON *action_item = cJSON_GetObjectItem(cmd, "action");
-    cJSON *dur_item = cJSON_GetObjectItem(cmd, "duration_ms");
+    int action = json_get_int(raw_json, "action");
+    int duration = json_get_int(raw_json, "duration_ms");
 
-    int action = action_item ? action_item->valueint : ACTION_STOP;
-    int duration = dur_item ? dur_item->valueint : 0;
+    if (action < 0) action = ACTION_STOP;
+    if (duration < 0) duration = 0;
 
     const char *action_names[] = {"FORWARD", "TURN_RIGHT", "TURN_LEFT", "STOP"};
     const char *name = (action >= 0 && action <= 3) ? action_names[action] : "UNKNOWN";
@@ -285,13 +309,13 @@ static void handle_t6_motor(cJSON *cmd)
     /* Execute the motor action */
     switch (action) {
         case ACTION_FORWARD:
-            motor_forward(duration > 0 ? duration : FORWARD_MS);
+            motor_forward(duration > 0 ? (uint32_t)duration : FORWARD_MS);
             break;
         case ACTION_TURN_RIGHT:
-            motor_turn_right(duration > 0 ? duration : TURN_45_MS);
+            motor_turn_right(duration > 0 ? (uint32_t)duration : TURN_45_MS);
             break;
         case ACTION_TURN_LEFT:
-            motor_turn_left(duration > 0 ? duration : TURN_45_MS);
+            motor_turn_left(duration > 0 ? (uint32_t)duration : TURN_45_MS);
             break;
         case ACTION_STOP:
         default:
@@ -301,12 +325,11 @@ static void handle_t6_motor(cJSON *cmd)
 
     ESP_LOGI(TAG, "T6: Motor action %s complete", name);
 
-    cJSON *resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp, "status", "ok");
-    cJSON_AddStringToObject(resp, "action_name", name);
-    cJSON_AddNumberToObject(resp, "action", action);
-    test_send_json(resp);
-    cJSON_Delete(resp);
+    char resp[128];
+    snprintf(resp, sizeof(resp),
+             "{\"status\":\"ok\",\"action_name\":\"%s\",\"action\":%d}",
+             name, action);
+    test_send_str(resp);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -352,48 +375,50 @@ esp_err_t test_mode_run_motor(void)
     ESP_LOGI(TAG, "Connected to test server!");
 
     /* ── Send HELLO ── */
-    cJSON *hello = cJSON_CreateObject();
-    cJSON_AddStringToObject(hello, "board", "motor");
-    cJSON_AddStringToObject(hello, "status", "hello");
-    test_send_json(hello);
-    cJSON_Delete(hello);
+    test_send_str("{\"board\":\"motor\",\"status\":\"hello\"}");
 
     /* ── Process test commands ── */
     while (1) {
-        cJSON *cmd = test_recv_json();
-        if (!cmd) {
+        char *raw = test_recv_str();
+        if (!raw) {
             ESP_LOGW(TAG, "No more commands — disconnected or done");
             break;
         }
 
-        cJSON *cmd_field = cJSON_GetObjectItem(cmd, "cmd");
-        if (!cmd_field || !cJSON_IsString(cmd_field)) {
-            ESP_LOGW(TAG, "Invalid command");
-            cJSON_Delete(cmd);
+        /* Make a copy for handlers that need the full JSON
+         * (json_get_cmd modifies the string in place) */
+        char raw_copy[512];
+        strncpy(raw_copy, raw, sizeof(raw_copy) - 1);
+        raw_copy[sizeof(raw_copy) - 1] = '\0';
+
+        char *cmd = json_get_cmd(raw);
+        if (!cmd) {
+            ESP_LOGW(TAG, "Invalid command JSON");
+            free(raw);
             continue;
         }
 
-        const char *cmd_str = cmd_field->valuestring;
-        ESP_LOGI(TAG, "Command: %s", cmd_str);
+        ESP_LOGI(TAG, "Command: %s", cmd);
 
-        if (strcmp(cmd_str, "t1_ok") == 0) {
-            handle_t1_ok(cmd);
-        } else if (strcmp(cmd_str, "t3_spi_recv") == 0) {
-            handle_t3_spi_recv(cmd);
-        } else if (strcmp(cmd_str, "t4_imu_read") == 0) {
-            handle_t4_imu_read(cmd);
-        } else if (strcmp(cmd_str, "t5_spi_respond") == 0) {
-            handle_t5_spi_respond(cmd);
-        } else if (strcmp(cmd_str, "t6_motor") == 0) {
-            handle_t6_motor(cmd);
-        } else if (strcmp(cmd_str, "done") == 0) {
+        if (strcmp(cmd, "t1_ok") == 0) {
+            handle_t1_ok();
+        } else if (strcmp(cmd, "t3_spi_recv") == 0) {
+            handle_t3_spi_recv();
+        } else if (strcmp(cmd, "t4_imu_read") == 0) {
+            handle_t4_imu_read();
+        } else if (strcmp(cmd, "t5_spi_respond") == 0) {
+            handle_t5_spi_respond();
+        } else if (strcmp(cmd, "t6_motor") == 0) {
+            handle_t6_motor(raw_copy);
+        } else if (strcmp(cmd, "done") == 0) {
             ESP_LOGI(TAG, "Test suite complete!");
+            free(raw);
             break;
         } else {
-            ESP_LOGW(TAG, "Unknown command: %s", cmd_str);
+            ESP_LOGW(TAG, "Unknown command: %s", cmd);
         }
 
-        cJSON_Delete(cmd);
+        free(raw);
     }
 
     close(s_test_sock);
