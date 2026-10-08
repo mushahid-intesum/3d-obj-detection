@@ -132,8 +132,8 @@ void motor_execute_action(uint8_t action_id)
     switch (action_id) {
         case ACTION_NORTH:    ESP_LOGI(TAG, "NORTH");    motor_forward(FORWARD_MS);    break;
         case ACTION_SOUTH:    ESP_LOGI(TAG, "SOUTH");    motor_reverse(FORWARD_MS);    break;
-        case ACTION_EAST:     ESP_LOGI(TAG, "EAST");     motor_turn_right(TURN_MS);    break;
-        case ACTION_WEST:     ESP_LOGI(TAG, "WEST");     motor_turn_left(TURN_MS);     break;
+        case ACTION_EAST:     ESP_LOGI(TAG, "EAST");     motor_turn_right(TURN_90_MS);    break;
+        case ACTION_WEST:     ESP_LOGI(TAG, "WEST");     motor_turn_left(TURN_90_MS);     break;
         case ACTION_STAY:     ESP_LOGI(TAG, "STAY");     motor_stop();                 break;
         case ACTION_INTERACT: ESP_LOGI(TAG, "INTERACT"); motor_stop();                 break;
         default:              ESP_LOGW(TAG, "Unknown action %d", action_id);           break;

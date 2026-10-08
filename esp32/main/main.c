@@ -38,14 +38,56 @@ static const firmware_mode_t FIRMWARE_MODE = MODE_COLLECT;
 /* ═══════════════════════════════════════════ */
 
 /**
- * @brief Data collection task (Phase 1/2).
+ * @brief Direction labels for logging.
+ */
+static const char *DIR_NAMES[COLLECT_NUM_DIRS] = {
+    "N", "NE", "E", "SE", "S", "SW", "W", "NW"
+};
+
+/**
+ * @brief Capture and send N photos at the current heading.
  *
- * Streams JPEG frames to the laptop. The laptop decodes JPEG
- * and saves as 48×48 RGB for training.
+ * @return Number of frames successfully sent.
+ */
+static uint32_t capture_burst(uint32_t *frame_id, uint8_t dir_idx)
+{
+    uint32_t sent = 0;
+    for (int p = 0; p < COLLECT_PHOTOS_PER_DIR; p++) {
+        camera_fb_t *fb = camera_capture_frame();
+        if (fb) {
+            uint16_t dist = ultrasonic_get_cached_cm();
+            stream_send_frame(*frame_id, fb->buf, dist, dir_idx);
+            camera_release_frame(fb);
+            (*frame_id)++;
+            sent++;
+        }
+        if (p < COLLECT_PHOTOS_PER_DIR - 1) {
+            vTaskDelay(pdMS_TO_TICKS(COLLECT_PHOTO_INTERVAL_MS));
+        }
+    }
+    return sent;
+}
+
+/**
+ * @brief Data collection task (Phase 1/2) — autonomous.
+ *
+ * At each position:
+ *   1. Face each of 8 directions (N, NE, E, SE, S, SW, W, NW)
+ *   2. Take COLLECT_PHOTOS_PER_DIR photos per direction
+ *   3. Rotate back to original heading (N)
+ *   4. Move forward one cell
+ *
+ * If ultrasonic detects an obstacle for COLLECT_BARRIER_LIMIT
+ * consecutive forward attempts, the collection stops.
  */
 static void data_collection_task(void *pvParam)
 {
-    ESP_LOGI(TAG, "Data collection task started");
+    ESP_LOGI(TAG, "═══ Autonomous Data Collection ═══");
+    ESP_LOGI(TAG, "  %d directions × %d photos = %d photos/position",
+             COLLECT_NUM_DIRS, COLLECT_PHOTOS_PER_DIR,
+             COLLECT_NUM_DIRS * COLLECT_PHOTOS_PER_DIR);
+    ESP_LOGI(TAG, "  Barrier limit: %d consecutive hits",
+             COLLECT_BARRIER_LIMIT);
     ESP_LOGI(TAG, "Waiting for TCP client on port %d...", STREAM_DEFAULT_PORT);
 
     if (stream_server_start(STREAM_DEFAULT_PORT) != ESP_OK) {
@@ -55,64 +97,66 @@ static void data_collection_task(void *pvParam)
     }
 
     uint32_t frame_id = 0;
-    uint8_t last_action = ACTION_STAY;
+    uint32_t position = 0;
+    int consecutive_barriers = 0;
 
     while (stream_is_connected()) {
-        char cmd = 0;
-        esp_err_t err = stream_recv_command(&cmd);
+        position++;
+        ESP_LOGI(TAG, "── Position %lu ──", (unsigned long)position);
 
-        if (err == ESP_ERR_TIMEOUT) {
-            /* No command — just capture and send */
-        } else if (err == ESP_OK) {
-            uint16_t dist = ultrasonic_get_cached_cm();
-            uint8_t action = ACTION_STAY;
-
-            switch (cmd) {
-            case 'F': action = ACTION_NORTH; break;
-            case 'B': action = ACTION_SOUTH; break;
-            case 'L': action = ACTION_WEST;  break;
-            case 'R': action = ACTION_EAST;  break;
-            case 'S': action = ACTION_STAY;  break;
-            case 'Q':
-                ESP_LOGI(TAG, "Quit command received");
-                motor_stop();
-                goto done;
-            default:
-                ESP_LOGW(TAG, "Unknown command: 0x%02X", cmd);
-                continue;
+        /* ── 8-direction photo sweep ── */
+        for (int d = 0; d < COLLECT_NUM_DIRS; d++) {
+            /* Rotate 45° right to next direction (skip for d=0, already facing N) */
+            if (d > 0) {
+                motor_turn_right(TURN_45_MS);
+                vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
             }
 
-            /* Ultrasonic safety override */
-            if (action == ACTION_NORTH && dist < US_OBSTACLE_CM) {
-                ESP_LOGW(TAG, "Ultrasonic override! dist=%u cm", dist);
-                action = ACTION_EAST;
-            }
+            ESP_LOGI(TAG, "  Dir %s: capturing %d photos...",
+                     DIR_NAMES[d], COLLECT_PHOTOS_PER_DIR);
 
-            motor_execute_action(action);
-            last_action = action;
-        } else {
-            break;
+            capture_burst(&frame_id, (uint8_t)d);
+
+            if (!stream_is_connected()) goto done;
         }
 
-        /* Capture JPEG frame and stream */
-        camera_fb_t *fb = camera_capture_frame();
-        if (fb) {
-            uint16_t dist = ultrasonic_get_cached_cm();
-            stream_send_frame(frame_id, fb->buf, dist, last_action);
-            camera_release_frame(fb);
-            frame_id++;
+        /* ── Rotate back to original heading (N) ──
+         * We've turned 7 × 45° = 315° right. Turn 45° more to complete 360°. */
+        motor_turn_right(TURN_45_MS);
+        vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
 
-            if (frame_id % 100 == 0) {
-                ESP_LOGI(TAG, "Frames sent: %lu, dist: %u cm",
-                         (unsigned long)frame_id, dist);
+        ESP_LOGI(TAG, "  Sweep complete. Total frames: %lu",
+                 (unsigned long)frame_id);
+
+        /* ── Move forward ── */
+        uint16_t dist = ultrasonic_get_cached_cm();
+        if (dist < US_OBSTACLE_CM) {
+            consecutive_barriers++;
+            ESP_LOGW(TAG, "  BARRIER detected (%u cm) [%d/%d]",
+                     dist, consecutive_barriers, COLLECT_BARRIER_LIMIT);
+
+            if (consecutive_barriers >= COLLECT_BARRIER_LIMIT) {
+                ESP_LOGE(TAG, "  Barrier limit reached — stopping collection.");
+                break;
             }
+
+            /* Try turning right 90° to find a new path */
+            ESP_LOGI(TAG, "  Turning 90° right to avoid obstacle...");
+            motor_turn_right(TURN_90_MS);
+            vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
+        } else {
+            consecutive_barriers = 0;  /* Reset on successful forward */
+            ESP_LOGI(TAG, "  Moving forward (%u cm clear)...", dist);
+            motor_forward(FORWARD_MS);
+            vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
         }
     }
 
 done:
     motor_stop();
-    ESP_LOGI(TAG, "Data collection ended. Total frames: %lu",
-             (unsigned long)frame_id);
+    ESP_LOGI(TAG, "═══ Collection ended ═══");
+    ESP_LOGI(TAG, "  Positions visited: %lu", (unsigned long)position);
+    ESP_LOGI(TAG, "  Total frames sent: %lu", (unsigned long)frame_id);
     vTaskDelete(NULL);
 }
 

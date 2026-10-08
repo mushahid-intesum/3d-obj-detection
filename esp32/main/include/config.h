@@ -52,9 +52,10 @@
 #define MOTOR_PWM_BITS     8         /* 8-bit resolution = 0-255  */
 #define MOTOR_SPEED        100       /* PWM duty 0-255            */
 
-/* Movement timing */
+/* Movement timing — TUNE THESE MANUALLY (no IMU) */
 #define FORWARD_MS      500          /* ms to move one grid cell  */
-#define TURN_MS         350          /* ms for 90° pivot turn     */
+#define TURN_90_MS      350          /* ms for 90° pivot turn     */
+#define TURN_45_MS      175          /* ms for 45° pivot turn     */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  HC-SR04 Ultrasonic Sensor
@@ -64,6 +65,15 @@
 #define US_TIMEOUT_US   25000          /* Max echo wait (~4m)      */
 #define US_POLL_MS      100            /* Polling interval (10 Hz) */
 #define US_OBSTACLE_CM  12             /* Safety override threshold*/
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  Data Collection Parameters
+ * ═══════════════════════════════════════════════════════════════════════════ */
+#define COLLECT_PHOTOS_PER_DIR   3   /* photos per direction      */
+#define COLLECT_SETTLE_MS        200  /* wait after turn to settle */
+#define COLLECT_PHOTO_INTERVAL_MS 150 /* between consecutive shots */
+#define COLLECT_BARRIER_LIMIT    3   /* consecutive hits → stop   */
+#define COLLECT_NUM_DIRS         8   /* N,NE,E,SE,S,SW,W,NW      */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Action Space
