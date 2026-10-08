@@ -5,7 +5,9 @@
  * Pure constants — no driver includes. Each .c file includes its own
  * driver headers. Pin numbers are plain integers.
  *
- * Camera pins from user's Freenove ESP32-S3 WROOM board.
+ * Camera pins from Freenove ESP32-S3 WROOM board.
+ * No ultrasonic sensor — depth is learned end-to-end via
+ * depth-distilled policy (MiDaS auxiliary loss during training).
  */
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -39,6 +41,8 @@
  *
  *  Motor A (left):  IN1/IN2 direction, ENA speed (PWM)
  *  Motor B (right): IN3/IN4 direction, ENB speed (PWM)
+ *
+ *  GPIOs 33-37 are PSRAM — cannot use. Using 38-42 + 14.
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define MOTOR_IN1       38             /* Motor A direction 1      */
 #define MOTOR_IN2       39             /* Motor A direction 2      */
@@ -58,21 +62,12 @@
 #define TURN_45_MS      175          /* ms for 45° pivot turn     */
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  HC-SR04 Ultrasonic Sensor
- * ═══════════════════════════════════════════════════════════════════════════ */
-#define US_TRIG_PIN     1              /* Trigger pulse            */
-#define US_ECHO_PIN     2              /* Echo response            */
-#define US_TIMEOUT_US   25000          /* Max echo wait (~4m)      */
-#define US_POLL_MS      100            /* Polling interval (10 Hz) */
-#define US_OBSTACLE_CM  12             /* Safety override threshold*/
-
-/* ═══════════════════════════════════════════════════════════════════════════
  *  Data Collection Parameters
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define COLLECT_PHOTOS_PER_DIR   3   /* photos per direction      */
 #define COLLECT_SETTLE_MS        200  /* wait after turn to settle */
 #define COLLECT_PHOTO_INTERVAL_MS 150 /* between consecutive shots */
-#define COLLECT_BARRIER_LIMIT    3   /* consecutive hits → stop   */
+#define COLLECT_MAX_POSITIONS    100  /* auto-stop after N cells   */
 #define COLLECT_NUM_DIRS         8   /* N,NE,E,SE,S,SW,W,NW      */
 
 /* ═══════════════════════════════════════════════════════════════════════════

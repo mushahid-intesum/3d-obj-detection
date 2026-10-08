@@ -1,14 +1,15 @@
 /**
  * @file wifi_stream.c
  * @brief WiFi STA mode and TCP server for data collection streaming.
+ *
+ * Streams raw JPEG frames with metadata header. The server handles
+ * JPEG decode, resize to 48×48, and MiDaS depth map generation.
  */
 #include "wifi_stream.h"
-#include "image_proc.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -143,70 +144,53 @@ esp_err_t stream_server_start(uint16_t port)
         return ESP_FAIL;
     }
 
-    /* Set receive timeout for command reads */
-    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-    setsockopt(s_client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
     ESP_LOGI(TAG, "Client connected!");
     return ESP_OK;
 }
 
-esp_err_t stream_send_frame(uint32_t frame_id, const uint8_t *img_rgb888,
-                            uint16_t ultrasonic_cm, uint8_t last_action)
+/**
+ * @brief Send all bytes reliably over TCP.
+ */
+static esp_err_t send_all(const void *buf, size_t len)
 {
-    if (s_client_sock < 0) return ESP_FAIL;
-
-    /*
-     * Packet layout (6923 bytes total):
-     *   [0..3]    magic:   0x494D4731 ("IMG1")
-     *   [4..7]    frame_id (uint32 LE)
-     *   [8..9]    ultrasonic_cm (uint16 LE)
-     *   [10]      last_action (uint8)
-     *   [11..6922] image data (48*48*3 = 6912 bytes)
-     */
-    uint8_t header[11];
-    uint32_t magic = STREAM_MAGIC;
-    memcpy(&header[0], &magic, 4);
-    memcpy(&header[4], &frame_id, 4);
-    memcpy(&header[8], &ultrasonic_cm, 2);
-    header[10] = last_action;
-
-    /* Send header */
-    int sent = send(s_client_sock, header, sizeof(header), 0);
-    if (sent < 0) {
-        ESP_LOGW(TAG, "Send header failed: %d", errno);
-        return ESP_FAIL;
-    }
-
-    /* Send image in chunks (TCP may not send all at once) */
-    size_t total = IMG_TARGET_W * IMG_TARGET_H * 3;
+    const uint8_t *p = (const uint8_t *)buf;
     size_t offset = 0;
-    while (offset < total) {
-        sent = send(s_client_sock, img_rgb888 + offset, total - offset, 0);
+    while (offset < len) {
+        int sent = send(s_client_sock, p + offset, len - offset, 0);
         if (sent < 0) {
-            ESP_LOGW(TAG, "Send image failed: %d", errno);
+            ESP_LOGW(TAG, "Send failed: %d", errno);
             return ESP_FAIL;
         }
         offset += sent;
     }
-
     return ESP_OK;
 }
 
-esp_err_t stream_recv_command(char *cmd)
+esp_err_t stream_send_jpeg(uint32_t frame_id, const uint8_t *jpeg_buf,
+                           uint32_t jpeg_len, uint8_t dir_index)
 {
     if (s_client_sock < 0) return ESP_FAIL;
 
-    int n = recv(s_client_sock, cmd, 1, 0);
-    if (n == 1) {
-        return ESP_OK;
-    } else if (n == 0) {
-        ESP_LOGW(TAG, "Client disconnected");
-        s_client_sock = -1;
-        return ESP_FAIL;
-    } else {
-        return ESP_ERR_TIMEOUT;
-    }
+    /*
+     * Packet layout:
+     *   [0..3]   magic:     0x494D4732 ("IMG2")
+     *   [4..7]   frame_id   (uint32 LE)
+     *   [8]      dir_index  (uint8, 0-7)
+     *   [9..12]  jpeg_len   (uint32 LE)
+     *   [13..N]  jpeg_data  (variable)
+     */
+    uint8_t header[13];
+    uint32_t magic = STREAM_MAGIC;
+    memcpy(&header[0], &magic, 4);
+    memcpy(&header[4], &frame_id, 4);
+    header[8] = dir_index;
+    memcpy(&header[9], &jpeg_len, 4);
+
+    /* Send header */
+    if (send_all(header, sizeof(header)) != ESP_OK) return ESP_FAIL;
+
+    /* Send JPEG data */
+    return send_all(jpeg_buf, jpeg_len);
 }
 
 bool stream_is_connected(void)

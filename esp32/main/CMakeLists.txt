@@ -2,9 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "camera.c"
-        "ultrasonic.c"
         "motor.c"
-        "image_proc.c"
         "wifi_stream.c"
         "correlation.c"
         "navigator.c"

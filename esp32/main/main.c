@@ -5,6 +5,9 @@
  * Supports two modes:
  *   MODE_COLLECT:  Data collection — stream JPEG frames to laptop (Phase 1/2)
  *   MODE_NAVIGATE: Autonomous navigation — run inference on-board (Phase 7)
+ *
+ * No ultrasonic sensor. Depth is learned end-to-end via depth-distilled
+ * policy (MiDaS auxiliary loss during training).
  */
 #include <stdio.h>
 #include <string.h>
@@ -18,9 +21,7 @@
 
 #include "config.h"
 #include "camera.h"
-#include "ultrasonic.h"
 #include "motor.h"
-#include "image_proc.h"
 #include "wifi_stream.h"
 #include "navigator.h"
 
@@ -45,8 +46,10 @@ static const char *DIR_NAMES[COLLECT_NUM_DIRS] = {
 };
 
 /**
- * @brief Capture and send N photos at the current heading.
+ * @brief Capture and send a burst of JPEG photos at the current heading.
  *
+ * @param frame_id  Pointer to monotonic frame counter (updated in place).
+ * @param dir_idx   Direction index (0-7).
  * @return Number of frames successfully sent.
  */
 static uint32_t capture_burst(uint32_t *frame_id, uint8_t dir_idx)
@@ -55,8 +58,7 @@ static uint32_t capture_burst(uint32_t *frame_id, uint8_t dir_idx)
     for (int p = 0; p < COLLECT_PHOTOS_PER_DIR; p++) {
         camera_fb_t *fb = camera_capture_frame();
         if (fb) {
-            uint16_t dist = ultrasonic_get_cached_cm();
-            stream_send_frame(*frame_id, fb->buf, dist, dir_idx);
+            stream_send_jpeg(*frame_id, fb->buf, fb->len, dir_idx);
             camera_release_frame(fb);
             (*frame_id)++;
             sent++;
@@ -77,8 +79,7 @@ static uint32_t capture_burst(uint32_t *frame_id, uint8_t dir_idx)
  *   3. Rotate back to original heading (N)
  *   4. Move forward one cell
  *
- * If ultrasonic detects an obstacle for COLLECT_BARRIER_LIMIT
- * consecutive forward attempts, the collection stops.
+ * Stops when COLLECT_MAX_POSITIONS is reached or TCP client disconnects.
  */
 static void data_collection_task(void *pvParam)
 {
@@ -86,8 +87,7 @@ static void data_collection_task(void *pvParam)
     ESP_LOGI(TAG, "  %d directions × %d photos = %d photos/position",
              COLLECT_NUM_DIRS, COLLECT_PHOTOS_PER_DIR,
              COLLECT_NUM_DIRS * COLLECT_PHOTOS_PER_DIR);
-    ESP_LOGI(TAG, "  Barrier limit: %d consecutive hits",
-             COLLECT_BARRIER_LIMIT);
+    ESP_LOGI(TAG, "  Max positions: %d", COLLECT_MAX_POSITIONS);
     ESP_LOGI(TAG, "Waiting for TCP client on port %d...", STREAM_DEFAULT_PORT);
 
     if (stream_server_start(STREAM_DEFAULT_PORT) != ESP_OK) {
@@ -97,16 +97,17 @@ static void data_collection_task(void *pvParam)
     }
 
     uint32_t frame_id = 0;
-    uint32_t position = 0;
-    int consecutive_barriers = 0;
 
-    while (stream_is_connected()) {
-        position++;
-        ESP_LOGI(TAG, "── Position %lu ──", (unsigned long)position);
+    for (uint32_t pos = 1;
+         pos <= COLLECT_MAX_POSITIONS && stream_is_connected();
+         pos++) {
+
+        ESP_LOGI(TAG, "── Position %lu / %d ──",
+                 (unsigned long)pos, COLLECT_MAX_POSITIONS);
 
         /* ── 8-direction photo sweep ── */
         for (int d = 0; d < COLLECT_NUM_DIRS; d++) {
-            /* Rotate 45° right to next direction (skip for d=0, already facing N) */
+            /* Rotate 45° right to next direction (skip for d=0, already facing fwd) */
             if (d > 0) {
                 motor_turn_right(TURN_45_MS);
                 vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
@@ -120,42 +121,23 @@ static void data_collection_task(void *pvParam)
             if (!stream_is_connected()) goto done;
         }
 
-        /* ── Rotate back to original heading (N) ──
-         * We've turned 7 × 45° = 315° right. Turn 45° more to complete 360°. */
+        /* ── Rotate back to original heading ──
+         * We've turned 7 × 45° = 315° right. Turn 45° more → 360°. */
         motor_turn_right(TURN_45_MS);
         vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
 
         ESP_LOGI(TAG, "  Sweep complete. Total frames: %lu",
                  (unsigned long)frame_id);
 
-        /* ── Move forward ── */
-        uint16_t dist = ultrasonic_get_cached_cm();
-        if (dist < US_OBSTACLE_CM) {
-            consecutive_barriers++;
-            ESP_LOGW(TAG, "  BARRIER detected (%u cm) [%d/%d]",
-                     dist, consecutive_barriers, COLLECT_BARRIER_LIMIT);
-
-            if (consecutive_barriers >= COLLECT_BARRIER_LIMIT) {
-                ESP_LOGE(TAG, "  Barrier limit reached — stopping collection.");
-                break;
-            }
-
-            /* Try turning right 90° to find a new path */
-            ESP_LOGI(TAG, "  Turning 90° right to avoid obstacle...");
-            motor_turn_right(TURN_90_MS);
-            vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
-        } else {
-            consecutive_barriers = 0;  /* Reset on successful forward */
-            ESP_LOGI(TAG, "  Moving forward (%u cm clear)...", dist);
-            motor_forward(FORWARD_MS);
-            vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
-        }
+        /* ── Move forward one cell ── */
+        ESP_LOGI(TAG, "  Moving forward...");
+        motor_forward(FORWARD_MS);
+        vTaskDelay(pdMS_TO_TICKS(COLLECT_SETTLE_MS));
     }
 
 done:
     motor_stop();
     ESP_LOGI(TAG, "═══ Collection ended ═══");
-    ESP_LOGI(TAG, "  Positions visited: %lu", (unsigned long)position);
     ESP_LOGI(TAG, "  Total frames sent: %lu", (unsigned long)frame_id);
     vTaskDelete(NULL);
 }
@@ -182,11 +164,6 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing network stack...");
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    /* Initialize ultrasonic (always needed) */
-    ESP_LOGI(TAG, "Initializing ultrasonic...");
-    ESP_ERROR_CHECK(ultrasonic_init());
-    ESP_ERROR_CHECK(ultrasonic_start_task());
 
     /* Mode-specific startup */
     switch (FIRMWARE_MODE) {
