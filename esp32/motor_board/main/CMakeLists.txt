@@ -8,8 +8,10 @@ idf_component_register(
         "correlation.c"
         "navigator.c"
         "inference.c"
+        "test_mode.c"
     INCLUDE_DIRS
         "include"
+        "."
     REQUIRES
         esp_timer
         nvs_flash
@@ -17,4 +19,8 @@ idf_component_register(
         esp_driver_ledc
         esp_driver_uart
         esp_driver_spi
+        esp_wifi
+        esp_event
+        esp_netif
+        json
 )

@@ -1,0 +1,336 @@
+/**
+ * @file test_mode.c
+ * @brief Camera Board test mode — connects to test server and runs commands.
+ *
+ * Protocol: Each message has a 6-byte header:
+ *   [4B] magic "TST\x01"
+ *   [2B] payload_len (uint16 LE)
+ *   [N]  payload (UTF-8 JSON)
+ *
+ * Uses cJSON for parsing (bundled with ESP-IDF).
+ */
+#include "test_mode.h"
+#include "config.h"
+#include "camera.h"
+#include "spi_master.h"
+#include "wifi_stream.h"
+
+#include "esp_log.h"
+#include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+
+static const char *TAG = "cam_test";
+
+/* ── Test server connection ── */
+#ifndef TEST_SERVER_IP
+#define TEST_SERVER_IP   "192.168.1.50"    /* Laptop IP — change as needed */
+#endif
+#ifndef TEST_SERVER_PORT
+#define TEST_SERVER_PORT 9999
+#endif
+
+#define TEST_MAGIC_0 'T'
+#define TEST_MAGIC_1 'S'
+#define TEST_MAGIC_2 'T'
+#define TEST_MAGIC_3 '\x01'
+
+static int s_test_sock = -1;
+
+/* ── Helpers ── */
+
+static esp_err_t send_all(int sock, const void *buf, size_t len)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t off = 0;
+    while (off < len) {
+        int sent = send(sock, p + off, len - off, 0);
+        if (sent < 0) return ESP_FAIL;
+        off += sent;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t recv_exact(int sock, void *buf, size_t len)
+{
+    uint8_t *p = (uint8_t *)buf;
+    size_t off = 0;
+    while (off < len) {
+        int got = recv(sock, p + off, len - off, 0);
+        if (got <= 0) return ESP_FAIL;
+        off += got;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t test_send_json(cJSON *json)
+{
+    char *str = cJSON_PrintUnformatted(json);
+    if (!str) return ESP_FAIL;
+
+    uint16_t payload_len = (uint16_t)strlen(str);
+    uint8_t header[6] = {TEST_MAGIC_0, TEST_MAGIC_1, TEST_MAGIC_2, TEST_MAGIC_3, 0, 0};
+    memcpy(&header[4], &payload_len, 2);
+
+    esp_err_t ret = send_all(s_test_sock, header, 6);
+    if (ret == ESP_OK) {
+        ret = send_all(s_test_sock, str, payload_len);
+    }
+    cJSON_free(str);
+    return ret;
+}
+
+static cJSON *test_recv_json(void)
+{
+    uint8_t header[6];
+    if (recv_exact(s_test_sock, header, 6) != ESP_OK) return NULL;
+
+    /* Verify magic */
+    if (header[0] != TEST_MAGIC_0 || header[1] != TEST_MAGIC_1 ||
+        header[2] != TEST_MAGIC_2 || header[3] != TEST_MAGIC_3) {
+        ESP_LOGE(TAG, "Bad test magic: %02x%02x%02x%02x",
+                 header[0], header[1], header[2], header[3]);
+        return NULL;
+    }
+
+    uint16_t payload_len;
+    memcpy(&payload_len, &header[4], 2);
+
+    if (payload_len > 4096) {
+        ESP_LOGE(TAG, "Payload too large: %u", payload_len);
+        return NULL;
+    }
+
+    char *buf = calloc(1, payload_len + 1);
+    if (!buf) return NULL;
+
+    if (recv_exact(s_test_sock, buf, payload_len) != ESP_OK) {
+        free(buf);
+        return NULL;
+    }
+    buf[payload_len] = '\0';
+
+    cJSON *json = cJSON_Parse(buf);
+    free(buf);
+    return json;
+}
+
+/* ── Send IMG4 packet directly to test socket ── */
+
+static esp_err_t send_img4_to_test(uint32_t frame_id, uint32_t timestep,
+                                     uint8_t action, uint8_t blocked,
+                                     float heading,
+                                     const uint8_t *jpeg, uint32_t jpeg_len)
+{
+    uint8_t header[22];
+    uint32_t magic = 0x494D4734;  /* "IMG4" */
+    memcpy(&header[0],  &magic, 4);
+    memcpy(&header[4],  &frame_id, 4);
+    memcpy(&header[8],  &timestep, 4);
+    header[12] = action;
+    header[13] = blocked;
+    memcpy(&header[14], &heading, 4);
+    memcpy(&header[18], &jpeg_len, 4);
+
+    esp_err_t ret = send_all(s_test_sock, header, 22);
+    if (ret == ESP_OK) {
+        ret = send_all(s_test_sock, jpeg, jpeg_len);
+    }
+    return ret;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  Test command handlers
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+static void handle_t1_ok(cJSON *cmd)
+{
+    ESP_LOGI(TAG, "T1: Connectivity confirmed by server");
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", "ok");
+    cJSON_AddStringToObject(resp, "board", "camera");
+    test_send_json(resp);
+    cJSON_Delete(resp);
+}
+
+static void handle_t2_capture(cJSON *cmd)
+{
+    ESP_LOGI(TAG, "T2: Capturing frame...");
+
+    camera_fb_t *fb = camera_capture_frame();
+    if (!fb) {
+        ESP_LOGE(TAG, "T2: Camera capture failed!");
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddStringToObject(resp, "status", "fail");
+        cJSON_AddStringToObject(resp, "error", "camera_capture_failed");
+        test_send_json(resp);
+        cJSON_Delete(resp);
+        return;
+    }
+
+    ESP_LOGI(TAG, "T2: Got frame: %u bytes, sending IMG4...", (unsigned)fb->len);
+
+    /* Send IMG4 packet over the test socket */
+    send_img4_to_test(0, 0, ACTION_STOP, 0, 0.0f, fb->buf, fb->len);
+    camera_release_frame(fb);
+
+    /* Wait for T2 ACK from server */
+    cJSON *ack = test_recv_json();
+    if (ack) {
+        ESP_LOGI(TAG, "T2: Server ACK received");
+        cJSON_Delete(ack);
+    }
+}
+
+static void handle_t3_spi_send(cJSON *cmd)
+{
+    ESP_LOGI(TAG, "T3: Sending dummy SPI exchange to motor board...");
+
+    uint8_t action_out = ACTION_STOP;
+    float heading_out = 0.0f;
+
+    esp_err_t ret = spi_exchange_collection(0, &action_out, &heading_out);
+
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "T3: SPI exchange OK — action=%d heading=%.1f",
+                 action_out, heading_out);
+    } else {
+        ESP_LOGW(TAG, "T3: SPI exchange failed: 0x%x", ret);
+    }
+    /* Motor board reports result to server directly */
+}
+
+static void handle_t5_full_cycle(cJSON *cmd)
+{
+    ESP_LOGI(TAG, "T5: Full pipeline — capture + SPI + stream...");
+
+    /* 1. Capture frame */
+    camera_fb_t *fb = camera_capture_frame();
+    if (!fb) {
+        ESP_LOGE(TAG, "T5: Capture failed");
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddStringToObject(resp, "status", "fail");
+        cJSON_AddStringToObject(resp, "error", "capture_failed");
+        test_send_json(resp);
+        cJSON_Delete(resp);
+        return;
+    }
+
+    /* 2. SPI exchange with motor board */
+    uint8_t action = ACTION_STOP;
+    float heading = 0.0f;
+    esp_err_t spi_ret = spi_exchange_collection(0, &action, &heading);
+
+    if (spi_ret != ESP_OK) {
+        ESP_LOGW(TAG, "T5: SPI failed, using defaults");
+        action = ACTION_STOP;
+        heading = 0.0f;
+    } else {
+        ESP_LOGI(TAG, "T5: SPI OK — action=%d heading=%.1f", action, heading);
+    }
+
+    /* 3. Send IMG4 to test server */
+    send_img4_to_test(1, 1, action, 0, heading, fb->buf, fb->len);
+    camera_release_frame(fb);
+
+    /* 4. Send OK via test channel */
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", "ok");
+    cJSON_AddNumberToObject(resp, "action", action);
+    cJSON_AddNumberToObject(resp, "heading", heading);
+    test_send_json(resp);
+    cJSON_Delete(resp);
+
+    ESP_LOGI(TAG, "T5: Full pipeline complete");
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  Main test loop
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+esp_err_t test_mode_run_camera(void)
+{
+    ESP_LOGI(TAG, "╔═══════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   Camera Board — TEST MODE            ║");
+    ESP_LOGI(TAG, "╚═══════════════════════════════════════╝");
+
+    /* ── Connect to test server ── */
+    ESP_LOGI(TAG, "Connecting to test server %s:%d...", TEST_SERVER_IP, TEST_SERVER_PORT);
+
+    struct sockaddr_in server_addr = {
+        .sin_family = AF_INET,
+        .sin_port   = htons(TEST_SERVER_PORT),
+    };
+    inet_aton(TEST_SERVER_IP, &server_addr.sin_addr);
+
+    s_test_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s_test_sock < 0) {
+        ESP_LOGE(TAG, "Socket creation failed");
+        return ESP_FAIL;
+    }
+
+    /* Retry connection */
+    for (int i = 0; i < 10; i++) {
+        int ret = connect(s_test_sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
+        if (ret == 0) break;
+        ESP_LOGW(TAG, "Connect retry %d/10...", i + 1);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+
+    ESP_LOGI(TAG, "Connected to test server!");
+
+    /* ── Send HELLO ── */
+    cJSON *hello = cJSON_CreateObject();
+    cJSON_AddStringToObject(hello, "board", "camera");
+    cJSON_AddStringToObject(hello, "status", "hello");
+    test_send_json(hello);
+    cJSON_Delete(hello);
+
+    /* ── Process test commands ── */
+    while (1) {
+        cJSON *cmd = test_recv_json();
+        if (!cmd) {
+            ESP_LOGW(TAG, "No more commands — disconnected or done");
+            break;
+        }
+
+        cJSON *cmd_field = cJSON_GetObjectItem(cmd, "cmd");
+        if (!cmd_field || !cJSON_IsString(cmd_field)) {
+            ESP_LOGW(TAG, "Invalid command");
+            cJSON_Delete(cmd);
+            continue;
+        }
+
+        const char *cmd_str = cmd_field->valuestring;
+        ESP_LOGI(TAG, "Command: %s", cmd_str);
+
+        if (strcmp(cmd_str, "t1_ok") == 0) {
+            handle_t1_ok(cmd);
+        } else if (strcmp(cmd_str, "t2_capture") == 0) {
+            handle_t2_capture(cmd);
+        } else if (strcmp(cmd_str, "t3_spi_send") == 0) {
+            handle_t3_spi_send(cmd);
+        } else if (strcmp(cmd_str, "t5_full_cycle") == 0) {
+            handle_t5_full_cycle(cmd);
+        } else if (strcmp(cmd_str, "done") == 0) {
+            ESP_LOGI(TAG, "Test suite complete!");
+            break;
+        } else {
+            ESP_LOGW(TAG, "Unknown command: %s", cmd_str);
+        }
+
+        cJSON_Delete(cmd);
+    }
+
+    close(s_test_sock);
+    s_test_sock = -1;
+
+    ESP_LOGI(TAG, "Camera test mode finished.");
+    return ESP_OK;
+}

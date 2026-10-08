@@ -19,6 +19,10 @@
 
 #include "inference.h"
 
+#if defined(TEST_MODE) && TEST_MODE
+#include "test_mode.h"
+#endif
+
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -103,6 +107,13 @@ void app_main(void)
     ESP_LOGI(TAG, "[3/4] Initializing SPI slave...");
     ESP_ERROR_CHECK(spi_slave_init());
 
+#if defined(TEST_MODE) && TEST_MODE
+    /* ── TEST MODE: connect to test server instead of normal operation ── */
+    ESP_LOGI(TAG, "*** TEST MODE ENABLED ***");
+    test_mode_run_motor();
+    ESP_LOGI(TAG, "Test mode complete — halting.");
+    return;
+#else
     /* Try to initialize policy — determines mode */
     bool nav_mode = false;
     ret = inference_init();
@@ -130,4 +141,5 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Motor Board running (%s mode).",
              nav_mode ? "navigation" : "collection");
+#endif
 }

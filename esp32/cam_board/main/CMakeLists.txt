@@ -6,8 +6,10 @@ idf_component_register(
         "spi_master.c"
         "image_proc.c"
         "inference.c"
+        "test_mode.c"
     INCLUDE_DIRS
         "include"
+        "."
     REQUIRES
         esp_wifi
         esp_event
@@ -17,4 +19,5 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_ledc
         esp_driver_spi
+        json
 )

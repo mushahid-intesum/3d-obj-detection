@@ -25,6 +25,10 @@
 #include "inference.h"
 #include "image_proc.h"
 
+#if defined(TEST_MODE) && TEST_MODE
+#include "test_mode.h"
+#endif
+
 static const char *TAG = "cam_main";
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -202,6 +206,13 @@ void app_main(void)
     ESP_LOGI(TAG, "[3/4] Connecting to WiFi...");
     ESP_ERROR_CHECK(wifi_init_sta());
 
+#if defined(TEST_MODE) && TEST_MODE
+    /* ── TEST MODE: connect to test server instead of normal operation ── */
+    ESP_LOGI(TAG, "*** TEST MODE ENABLED ***");
+    test_mode_run_camera();
+    ESP_LOGI(TAG, "Test mode complete — halting.");
+    return;
+#else
     /* Start TCP server */
     ESP_LOGI(TAG, "[4/4] Starting TCP server...");
     ESP_ERROR_CHECK(stream_server_start(STREAM_DEFAULT_PORT));
@@ -230,4 +241,5 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Camera Board running (%s mode).",
              nav_mode ? "navigation" : "collection");
+#endif
 }
