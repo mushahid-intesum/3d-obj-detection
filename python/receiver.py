@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """
-receiver.py — TCP client for Phase 1/2 data collection.
+receiver.py — TCP client for free exploration data collection (IMG4 protocol).
 
-Connects to ESP32-S3, receives IMG3 packets (JPEG + IMU heading),
-decodes to 48×48 RGB, and saves organized data with metadata.
+Connects to Camera Board ESP32-S3, receives IMG4 packets containing:
+  - JPEG frame (captured by camera)
+  - action_taken (from Motor Board via SPI)
+  - depth_blocked (from depth guard)
+  - heading_deg (from IMU via Motor Board)
+  - timestep (session-local index)
+
+Saves:
+  data/<session_name>/
+    trajectory.jsonl      ← one JSON line per timestep
+    images/frame_NNNNNN.jpg
+    metadata.json         ← session-level metadata
 """
 
 import socket
@@ -26,21 +36,19 @@ except ImportError:
 # ═══════════════════════════════════════════════
 #  Configuration — edit these before running
 # ═══════════════════════════════════════════════
-ESP32_IP        = "192.168.1.100"   # ESP32 IP (check serial monitor)
+ESP32_IP        = "192.168.1.100"   # Camera Board IP
 ESP32_PORT      = 8888
-ROOM            = "room1"           # Room name
-START_DIR       = "west"            # Starting direction
-OUTPUT_DIR      = "data"            # Base output directory
-IMG_SIZE        = 48                # Resize to NxN
-SHOW_PREVIEW    = True              # Live OpenCV preview
-PHOTOS_PER_DIR  = 3                 # Must match ESP32 COLLECT_PHOTOS_PER_DIR
+SESSION_NAME    = ""                # auto-generated if empty
+OUTPUT_DIR      = "data"            # base output directory
+IMG_SIZE        = 48                # resize to NxN
+SHOW_PREVIEW    = True              # live OpenCV preview
 # ═══════════════════════════════════════════════
 
-# Protocol (must match wifi_stream.h v3)
-MAGIC = 0x494D4733           # "IMG3"
-HEADER_SIZE = 17             # 4+4+1+4+4
+# IMG4 protocol (must match wifi_stream.h)
+MAGIC = 0x494D4734           # "IMG4"
+HEADER_SIZE = 22             # 4+4+4+1+1+4+4
 
-DIR_NAMES = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+ACTION_NAMES = ["FWD", "RIGHT", "LEFT", "STOP"]
 
 
 def recv_exact(sock, n):
@@ -55,13 +63,19 @@ def recv_exact(sock, n):
 
 
 def main():
-    # Create output directory
-    run_name = f"{ROOM}_start_{START_DIR}"
-    out_dir = os.path.join(OUTPUT_DIR, run_name)
+    # Generate session name if not set
+    session_name = SESSION_NAME
+    if not session_name:
+        session_name = datetime.now().strftime("session_%Y%m%d_%H%M%S")
+
+    out_dir = os.path.join(OUTPUT_DIR, session_name)
     img_dir = os.path.join(out_dir, "images")
     os.makedirs(img_dir, exist_ok=True)
 
-    print(f"Output: {out_dir}")
+    traj_path = os.path.join(out_dir, "trajectory.jsonl")
+
+    print(f"Session: {session_name}")
+    print(f"Output:  {out_dir}")
     print(f"Connecting to {ESP32_IP}:{ESP32_PORT}...")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -69,72 +83,65 @@ def main():
     sock.connect((ESP32_IP, ESP32_PORT))
     print("Connected!\n")
 
-    # Metadata
-    metadata = {
-        "room": ROOM,
-        "start_direction": START_DIR,
-        "run_name": run_name,
-        "img_size": IMG_SIZE,
-        "created": datetime.now().isoformat(),
-        "frames": [],
-    }
-
     frame_count = 0
-    position = 0
-    last_dir = -1
+    override_count = 0
     t_start = time.time()
+
+    # Open trajectory file for streaming writes
+    traj_file = open(traj_path, "w")
 
     try:
         while True:
-            # ── Receive header ──
+            # ── Receive IMG4 header (22 bytes) ──
             header = recv_exact(sock, HEADER_SIZE)
-            magic, frame_id, dir_index, heading_deg, jpeg_len = \
-                struct.unpack("<IIBfI", header)
+            (magic, frame_id, timestep, action_taken,
+             depth_blocked, heading_deg, jpeg_len) = \
+                struct.unpack("<IIIBBfI", header)
 
             if magic != MAGIC:
-                print(f"  [WARN] Bad magic 0x{magic:08X}, skipping...")
+                print(f"  [WARN] Bad magic 0x{magic:08X}, resync...")
                 continue
 
-            # Track position changes (new sweep starts when dir wraps to 0)
-            if dir_index == 0 and last_dir > 0:
-                position += 1
-            last_dir = dir_index
-
-            # ── Receive JPEG ──
+            # ── Receive JPEG data ──
             jpeg_data = recv_exact(sock, jpeg_len)
 
-            # ── Decode & resize ──
+            # ── Decode & resize to 48×48 ──
             img = Image.open(BytesIO(jpeg_data)).convert("RGB")
             img_resized = img.resize((IMG_SIZE, IMG_SIZE), Image.LANCZOS)
 
             # ── Save image ──
-            dir_name = DIR_NAMES[dir_index]
-            photo_idx = frame_count % PHOTOS_PER_DIR
-            filename = f"pos{position:03d}_{dir_name}_{photo_idx}.jpg"
+            filename = f"frame_{frame_count:06d}.jpg"
             filepath = os.path.join(img_dir, filename)
             img_resized.save(filepath, quality=95)
 
-            # ── Record metadata ──
-            metadata["frames"].append({
-                "frame_id": int(frame_id),
-                "position": position,
-                "dir_index": int(dir_index),
-                "dir_name": dir_name,
-                "photo_idx": photo_idx,
-                "heading_deg": round(float(heading_deg), 2),
-                "filename": filename,
-                "jpeg_len": int(jpeg_len),
-            })
+            # ── Write trajectory line ──
+            entry = {
+                "t": frame_count,
+                "frame": filename,
+                "action": int(action_taken),
+                "heading": round(float(heading_deg), 2),
+                "blocked": bool(depth_blocked),
+                "ts": round(time.time(), 3),
+            }
+            traj_file.write(json.dumps(entry) + "\n")
+            traj_file.flush()
+
+            # Track overrides
+            if depth_blocked:
+                override_count += 1
 
             frame_count += 1
 
-            # ── Console output ──
-            elapsed = time.time() - t_start
-            fps = frame_count / elapsed if elapsed > 0 else 0
-            if frame_count % PHOTOS_PER_DIR == 0:
-                print(f"  pos{position:03d}_{dir_name}: "
-                      f"heading={heading_deg:6.1f}° "
-                      f"({frame_count} frames, {fps:.1f} fps)")
+            # ── Console output (every 10 frames) ──
+            if frame_count % 10 == 0:
+                elapsed = time.time() - t_start
+                fps = frame_count / elapsed if elapsed > 0 else 0
+                action_str = ACTION_NAMES[action_taken] if action_taken < 4 else "?"
+                print(f"  [{frame_count:>6}] "
+                      f"act={action_str:<5} "
+                      f"hdg={heading_deg:6.1f}° "
+                      f"blk={depth_blocked} "
+                      f"({fps:.1f} fps, {override_count} overrides)")
 
             # ── Live preview ──
             if HAS_CV2 and SHOW_PREVIEW:
@@ -142,11 +149,17 @@ def main():
                 display = cv2.resize(arr, (384, 384),
                                      interpolation=cv2.INTER_NEAREST)
                 display = cv2.cvtColor(display, cv2.COLOR_RGB2BGR)
-                label = (f"Pos:{position} Dir:{dir_name} "
+
+                action_str = ACTION_NAMES[action_taken] if action_taken < 4 else "?"
+                label = (f"Step:{frame_count} Act:{action_str} "
                          f"Hdg:{heading_deg:.0f}")
+                color = (0, 0, 255) if depth_blocked else (0, 255, 0)
                 cv2.putText(display, label, (8, 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                cv2.imshow("Data Collection", display)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                if depth_blocked:
+                    cv2.putText(display, "BLOCKED", (8, 370),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.imshow("Exploration", display)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
@@ -155,23 +168,33 @@ def main():
     except ConnectionError as e:
         print(f"\nConnection lost: {e}")
     finally:
+        traj_file.close()
         sock.close()
         if HAS_CV2 and SHOW_PREVIEW:
             cv2.destroyAllWindows()
 
-        # Save metadata
-        metadata["total_frames"] = frame_count
-        metadata["total_positions"] = position + 1
+        # Save session metadata
+        elapsed = time.time() - t_start
+        metadata = {
+            "session_name": session_name,
+            "total_frames": frame_count,
+            "overrides": override_count,
+            "duration_s": round(elapsed, 1),
+            "fps": round(frame_count / elapsed, 2) if elapsed > 0 else 0,
+            "img_size": IMG_SIZE,
+            "esp32_ip": ESP32_IP,
+            "created": datetime.now().isoformat(),
+        }
         meta_path = os.path.join(out_dir, "metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
-        print(f"\n{'═' * 40}")
+        print(f"\n{'═' * 45}")
         print(f"  Frames:    {frame_count}")
-        print(f"  Positions: {position + 1}")
+        print(f"  Overrides: {override_count}")
+        print(f"  Duration:  {elapsed:.0f}s ({metadata['fps']:.1f} fps)")
         print(f"  Saved to:  {out_dir}")
-        print(f"  Metadata:  {meta_path}")
-        print(f"{'═' * 40}")
+        print(f"{'═' * 45}")
 
 
 if __name__ == "__main__":
