@@ -158,7 +158,9 @@ static esp_err_t send_all(const void *buf, size_t len)
     while (offset < len) {
         int sent = send(s_client_sock, p + offset, len - offset, 0);
         if (sent < 0) {
-            ESP_LOGW(TAG, "Send failed: %d", errno);
+            ESP_LOGW(TAG, "Client disconnected (send err=%d)", errno);
+            close(s_client_sock);
+            s_client_sock = -1;
             return ESP_FAIL;
         }
         offset += sent;
