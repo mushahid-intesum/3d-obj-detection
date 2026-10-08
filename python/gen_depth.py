@@ -16,7 +16,7 @@ from PIL import Image
 # ═══════════════════════════════════════════════
 #  Configuration
 # ═══════════════════════════════════════════════
-DATA_DIR   = "data/room1_start_west"   # Single collection, or parent dir
+DATA_DIR   = "data"                    # Root dir — auto-scans all sessions
 IMG_SIZE   = 48                        # Output depth map size (NxN)
 DEVICE     = "cuda" if torch.cuda.is_available() else "cpu"
 # ═══════════════════════════════════════════════

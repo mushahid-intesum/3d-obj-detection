@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-models.py — RSRNav-IQL teacher model for ImageNav.
+models.py — Depth-aware teacher model for ImageNav.
 
 Components:
   - SharedEncoder:       ResNet-9 producing 6×6 feature maps
-  - CorrelationModule:   RSRNav-style direction-aware cross-correlation
-  - QNetwork:            State-action value estimator (IQL)
-  - VNetwork:            State value estimator (IQL)
-  - PolicyNetwork:       Advantage-weighted policy (IQL)
+  - CorrelationModule:   RSRNav-style cross-correlation
   - DepthDecoder:        Auxiliary depth prediction head (training only)
-  - TeacherModel:        Full pipeline with IQL heads
+  - TeacherModel:        Full pipeline: encoder → correlation → action + depth
 """
 
 import torch
@@ -202,15 +199,16 @@ class PolicyNetwork(nn.Module):
         return self.net(cue)
 
 
-# ─── IQL Value Networks ───
+# ─── Q-Network (IQL) ───
 
 class QNetwork(nn.Module):
-    """State-action value network for IQL.
+    """State-action Q-value estimator for IQL.
 
-    Takes correlation cue + discrete action index, outputs Q-value scalar.
+    Takes correlation cue and discrete action index,
+    returns scalar Q-value.
     """
 
-    def __init__(self, cue_dim=256, num_actions=4, hidden=128):
+    def __init__(self, cue_dim=256, hidden=128, num_actions=4):
         super().__init__()
         self.action_embed = nn.Embedding(num_actions, 32)
         self.net = nn.Sequential(
@@ -220,17 +218,23 @@ class QNetwork(nn.Module):
         )
 
     def forward(self, cue, actions):
-        """Args: cue (B, cue_dim), actions (B,) int.
-        Returns: q_values (B,) float."""
-        a_emb = self.action_embed(actions)  # (B, 32)
-        x = torch.cat([cue, a_emb], dim=-1)
-        return self.net(x).squeeze(-1)
+        """Args:
+            cue:     (B, cue_dim) correlation cue
+            actions: (B,) int64 action indices
+        Returns:
+            (B,) scalar Q-values
+        """
+        a_emb = self.action_embed(actions)          # (B, 32)
+        x = torch.cat([cue, a_emb], dim=-1)         # (B, cue_dim+32)
+        return self.net(x).squeeze(-1)               # (B,)
 
+
+# ─── V-Network (IQL) ───
 
 class VNetwork(nn.Module):
-    """State value network for IQL.
+    """State value estimator for IQL.
 
-    Takes correlation cue, outputs V-value scalar.
+    Takes correlation cue, returns scalar V-value.
     """
 
     def __init__(self, cue_dim=256, hidden=128):
@@ -242,7 +246,11 @@ class VNetwork(nn.Module):
         )
 
     def forward(self, cue):
-        """Args: cue (B, cue_dim). Returns: v_values (B,) float."""
+        """Args:
+            cue: (B, cue_dim) correlation cue
+        Returns:
+            (B,) scalar V-values
+        """
         return self.net(cue).squeeze(-1)
 
 
@@ -250,18 +258,15 @@ class VNetwork(nn.Module):
 
 class TeacherModel(nn.Module):
     """
-    RSRNav-IQL teacher model for image-goal navigation.
+    Depth-aware teacher model.
 
     Architecture:
-      obs  → SharedEncoder → f_obs  ─┬→ Correlation → cue → Policy (π)
-      goal → SharedEncoder → f_goal ─┘                  ├→ Q1, Q2 (critics)
-                                                         ├→ V (value)
-                               f_obs ─→ DepthDecoder    (auxiliary, training only)
+      obs → Encoder → f_obs ─┬→ Correlation(f_goal, f_obs) → cue → ActionHead
+      goal → Encoder → f_goal┘                                 ↑
+                        f_obs ─→ DepthDecoder → depth_pred     (auxiliary)
 
-    IQL heads (q1, q2, v) are used only during offline RL training.
-    At deployment, only encoder + correlation + policy are needed.
-    DepthDecoder is stripped for deployment; its auxiliary loss teaches
-    the encoder depth-aware features.
+    At deployment, DepthDecoder is removed. The encoder has learned
+    depth-aware features through the auxiliary loss.
     """
 
     def __init__(self, feat_dim=128, cue_dim=256, num_actions=4,
@@ -274,35 +279,29 @@ class TeacherModel(nn.Module):
         )
         self.policy = PolicyNetwork(cue_dim, num_actions=num_actions)
 
-        # IQL heads
-        self.q1 = QNetwork(cue_dim, num_actions)
-        self.q2 = QNetwork(cue_dim, num_actions)
+        # IQL value networks
+        self.q1 = QNetwork(cue_dim, num_actions=num_actions)
+        self.q2 = QNetwork(cue_dim, num_actions=num_actions)
         self.v = VNetwork(cue_dim)
 
-        # Auxiliary depth head (training only)
         self.use_depth_head = use_depth_head
         if use_depth_head:
             self.depth_decoder = DepthDecoder(feat_dim=feat_dim)
 
     def encode_and_correlate(self, obs, goal):
-        """Encode obs/goal and compute correlation cue.
+        """Encode obs/goal and compute correlation cue (no policy head).
 
-        Used by train_teacher.py and distill.py to get the cue
-        without running the policy head.
+        Used by IQL trainer which feeds the cue to Q/V/Policy separately.
 
-        Args:
-            obs:  (B, 3, 48, 48)
-            goal: (B, 3, 48, 48)
         Returns:
-            cue: (B, cue_dim)
+            cue: (B, cue_dim) correlation cue
         """
         f_obs = self.encoder(obs)
         f_goal = self.encoder(goal)
         return self.correlation(f_goal, f_obs)
 
     def forward(self, obs, goal, return_depth=False):
-        """Full forward pass: encode → correlate → policy.
-
+        """
         Args:
             obs:  (B, 3, 48, 48) current observation
             goal: (B, 3, 48, 48) goal image
@@ -337,13 +336,6 @@ class TeacherModel(nn.Module):
         self.use_depth_head = False
         print("[Model] Depth head stripped for deployment")
 
-    def strip_iql_heads(self):
-        """Remove IQL value heads for deployment / distillation."""
-        for attr in ("q1", "q2", "v"):
-            if hasattr(self, attr):
-                delattr(self, attr)
-        print("[Model] IQL heads (q1, q2, v) stripped")
-
     def count_params(self):
         """Count parameters by component."""
         counts = {}
@@ -352,12 +344,6 @@ class TeacherModel(nn.Module):
             p.numel() for p in self.correlation.parameters()
         )
         counts["policy"] = sum(p.numel() for p in self.policy.parameters())
-        if hasattr(self, "q1"):
-            counts["q1"] = sum(p.numel() for p in self.q1.parameters())
-        if hasattr(self, "q2"):
-            counts["q2"] = sum(p.numel() for p in self.q2.parameters())
-        if hasattr(self, "v"):
-            counts["v"] = sum(p.numel() for p in self.v.parameters())
         if self.use_depth_head:
             counts["depth_decoder"] = sum(
                 p.numel() for p in self.depth_decoder.parameters()
