@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
 """
-gen_depth.py — Generate depth maps using Depth Anything V2 Small.
+gen_depth.py — Generate Depth Anything V2 pseudo-depth labels for NYU Depth V2.
 
-Uses the HuggingFace Transformers model:
-    depth-anything/Depth-Anything-V2-Small-hf
+Two modes:
+  1. NYU Depth V2 (HuggingFace) — public indoor dataset for initial training
+  2. MCU sessions (local)        — robot-collected data for fine-tuning
 
-Reads images from collection sessions, runs depth estimation,
-and saves normalized [0,1] depth maps as .npy files.
-
-Higher depth values = closer objects (inverted from raw output).
+The DA-V2 teacher produces richer depth estimates than the Kinect ground truth,
+so we use DA-V2 pseudo-labels even though NYU has real depth. This ensures the
+student learns to match the teacher, not the sensor.
 
 Usage:
-    python gen_depth.py                    # process all sessions in data/
-    python gen_depth.py --data_dir path/   # custom data root
-    python gen_depth.py --force            # overwrite existing depth maps
+    python gen_depth.py
 """
 
 import os
 import glob
-import argparse
 import time
 
 import numpy as np
@@ -27,11 +24,17 @@ from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 # ═══════════════════════════════════════════════
-#  Configuration
+#  Configuration — edit these constants directly
 # ═══════════════════════════════════════════════
-DEFAULT_DATA_DIR = "data"
+SOURCE           = "nyu"        # "nyu" or "mcu"
 DEPTH_MAP_SIZE   = 48           # Output depth map resolution (NxN)
 MODEL_ID         = "depth-anything/Depth-Anything-V2-Small-hf"
+NYU_DATASET_ID   = "sayakpaul/nyu_depth_v2"
+NYU_CACHE_DIR    = "./data/nyu_depth_v2_cache"
+MCU_DATA_DIR     = "./data"
+LIMIT            = None         # Max training images (None = all)
+FORCE            = False        # Overwrite existing depth maps
+BATCH_SIZE       = 8            # DA-V2 batch size for GPU
 # ═══════════════════════════════════════════════
 
 
@@ -63,14 +66,11 @@ def predict_depth(model, processor, image, device, output_size=DEPTH_MAP_SIZE):
         depth_map: (output_size, output_size) float32 numpy array, normalized [0, 1].
                    Higher values = closer objects.
     """
-    # Prepare input
     inputs = processor(images=image, return_tensors="pt").to(device)
 
-    # Run model
     outputs = model(**inputs)
     predicted_depth = outputs.predicted_depth  # (1, H, W)
 
-    # Interpolate to target size
     depth = torch.nn.functional.interpolate(
         predicted_depth.unsqueeze(1),
         size=(output_size, output_size),
@@ -85,97 +85,204 @@ def predict_depth(model, processor, image, device, output_size=DEPTH_MAP_SIZE):
     else:
         depth = np.zeros_like(depth)
 
-    # Depth Anything outputs disparity (high = close), which is what we want.
-    # High values = close objects → obstacle.
     return depth.astype(np.float32)
 
 
-def process_directory(img_dir, model, processor, device, force=False):
-    """Generate depth maps for all images in a directory."""
+@torch.no_grad()
+def predict_depth_batch(model, processor, images, device,
+                        output_size=DEPTH_MAP_SIZE):
+    """
+    Run DA-V2 on a batch of PIL images.
+
+    Returns:
+        List of (output_size, output_size) float32 numpy arrays.
+    """
+    inputs = processor(images=images, return_tensors="pt").to(device)
+
+    outputs = model(**inputs)
+    predicted_depth = outputs.predicted_depth  # (B, H, W)
+
+    depth_batch = torch.nn.functional.interpolate(
+        predicted_depth.unsqueeze(1),
+        size=(output_size, output_size),
+        mode="bicubic",
+        align_corners=False,
+    ).squeeze(1).cpu().numpy()  # (B, output_size, output_size)
+
+    results = []
+    for depth in depth_batch:
+        d_min, d_max = depth.min(), depth.max()
+        if d_max - d_min > 1e-6:
+            depth = (depth - d_min) / (d_max - d_min)
+        else:
+            depth = np.zeros_like(depth)
+        results.append(depth.astype(np.float32))
+
+    return results
+
+
+# ─── NYU Depth V2 Processing ───
+
+def process_nyu(model, processor, device):
+    """
+    Download and process NYU Depth V2 from HuggingFace.
+
+    Saves:
+        data/nyu_depth_v2_cache/train/images/   ← resized 48×48 RGB
+        data/nyu_depth_v2_cache/train/depth/    ← DA-V2 48×48 depth maps
+        data/nyu_depth_v2_cache/val/images/
+        data/nyu_depth_v2_cache/val/depth/
+    """
+    from datasets import load_dataset
+
+    print(f"\nLoading {NYU_DATASET_ID} from HuggingFace...")
+    ds = load_dataset(NYU_DATASET_ID)
+
+    for split_name in ["train", "validation"]:
+        split = ds[split_name]
+        n_total = len(split)
+        if LIMIT and split_name == "train":
+            n_total = min(n_total, LIMIT)
+
+        img_dir = os.path.join(NYU_CACHE_DIR, split_name, "images")
+        depth_dir = os.path.join(NYU_CACHE_DIR, split_name, "depth")
+        os.makedirs(img_dir, exist_ok=True)
+        os.makedirs(depth_dir, exist_ok=True)
+
+        print(f"\n[{split_name}] Processing {n_total} images...")
+
+        processed = 0
+        skipped = 0
+        batch_imgs = []
+        batch_indices = []
+        batch_size = BATCH_SIZE
+        t0 = time.time()
+
+        for idx in range(n_total):
+            img_path = os.path.join(img_dir, f"frame_{idx:06d}.jpg")
+            depth_path = os.path.join(depth_dir, f"frame_{idx:06d}.npy")
+
+            # Skip if already processed
+            if os.path.exists(depth_path) and os.path.exists(img_path) \
+               and not FORCE:
+                skipped += 1
+                continue
+
+            # Get image from dataset
+            sample = split[idx]
+            img = sample["image"].convert("RGB")
+
+            # Save resized image (48×48 for student training)
+            img_48 = img.resize((DEPTH_MAP_SIZE, DEPTH_MAP_SIZE), Image.LANCZOS)
+            img_48.save(img_path, quality=95)
+
+            # Collect for batch processing
+            batch_imgs.append(img)
+            batch_indices.append(idx)
+
+            # Process batch
+            if len(batch_imgs) >= batch_size:
+                depths = predict_depth_batch(
+                    model, processor, batch_imgs, device
+                )
+                for bi, depth in zip(batch_indices, depths):
+                    dp = os.path.join(depth_dir, f"frame_{bi:06d}.npy")
+                    np.save(dp, depth)
+                processed += len(batch_imgs)
+                batch_imgs = []
+                batch_indices = []
+
+            # Progress
+            total_done = processed + skipped + len(batch_imgs)
+            if total_done % 500 == 0:
+                elapsed = time.time() - t0
+                fps = processed / max(elapsed, 1e-3) if processed > 0 else 0
+                print(f"  [{total_done}/{n_total}] "
+                      f"processed={processed} skipped={skipped} "
+                      f"({fps:.1f} img/s)")
+
+        # Process remaining batch
+        if batch_imgs:
+            depths = predict_depth_batch(
+                model, processor, batch_imgs, device
+            )
+            for bi, depth in zip(batch_indices, depths):
+                dp = os.path.join(depth_dir, f"frame_{bi:06d}.npy")
+                np.save(dp, depth)
+            processed += len(batch_imgs)
+
+        elapsed = time.time() - t0
+        print(f"  [{split_name}] Done: {processed} new + {skipped} existing "
+              f"({elapsed:.1f}s)")
+
+
+# ─── MCU Session Processing ───
+
+def process_mcu_sessions(model, processor, device):
+    """Process robot-collected sessions (existing local data)."""
+    total = 0
+
+    img_dir_direct = os.path.join(MCU_DATA_DIR, "images")
+    if os.path.isdir(img_dir_direct):
+        total += _process_one_dir(
+            img_dir_direct, model, processor, device
+        )
+    else:
+        for subdir in sorted(os.listdir(MCU_DATA_DIR)):
+            sub_img_dir = os.path.join(MCU_DATA_DIR, subdir, "images")
+            if os.path.isdir(sub_img_dir):
+                print(f"\nProcessing session: {subdir}")
+                total += _process_one_dir(
+                    sub_img_dir, model, processor, device
+                )
+
+    print(f"\nTotal: {total} depth maps")
+
+
+def _process_one_dir(img_dir, model, processor, device):
+    """Generate depth maps for all images in a single directory."""
     depth_dir = os.path.join(os.path.dirname(img_dir), "depth")
     os.makedirs(depth_dir, exist_ok=True)
 
     image_files = sorted(glob.glob(os.path.join(img_dir, "*.jpg")))
     if not image_files:
-        print(f"  No images found in {img_dir}")
+        print(f"  No images in {img_dir}")
         return 0
 
     processed = 0
-    skipped = 0
-    t0 = time.time()
-
-    for i, img_path in enumerate(image_files):
+    for img_path in image_files:
         basename = os.path.splitext(os.path.basename(img_path))[0]
         depth_path = os.path.join(depth_dir, f"{basename}.npy")
 
-        # Skip if already processed (unless force)
-        if os.path.exists(depth_path) and not force:
-            skipped += 1
+        if os.path.exists(depth_path) and not FORCE:
+            processed += 1
             continue
 
-        # Load image
         img = Image.open(img_path).convert("RGB")
-
-        # Run depth estimation
         depth = predict_depth(model, processor, img, device)
-
-        # Save
         np.save(depth_path, depth)
         processed += 1
 
-        # Progress
-        total_done = processed + skipped
-        if total_done % 50 == 0 or total_done == len(image_files):
-            elapsed = time.time() - t0
-            fps = processed / max(elapsed, 1e-3)
-            print(f"  [{total_done}/{len(image_files)}] "
-                  f"processed={processed} skipped={skipped} "
-                  f"({fps:.1f} img/s)")
-
-    elapsed = time.time() - t0
-    print(f"  Done: {processed} new + {skipped} existing = "
-          f"{processed + skipped} total ({elapsed:.1f}s)")
-    return processed + skipped
+    print(f"  Done: {processed} depth maps in {depth_dir}")
+    return processed
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Generate depth maps with Depth Anything V2"
-    )
-    parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR,
-                        help="Root data directory with session subdirs")
-    parser.add_argument("--force", action="store_true",
-                        help="Overwrite existing depth maps")
-    args = parser.parse_args()
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print("═" * 55)
+    print("═" * 60)
     print("  Depth Anything V2 — Depth Map Generator")
-    print("═" * 55)
+    print(f"  Source: {SOURCE.upper()}")
+    print("═" * 60)
 
     model, processor = load_depth_anything(device)
 
-    # Check if data_dir has images/ directly (single session)
-    img_dir = os.path.join(args.data_dir, "images")
-    if os.path.isdir(img_dir):
-        print(f"\nProcessing: {args.data_dir}")
-        process_directory(img_dir, model, processor, device, args.force)
+    if SOURCE == "nyu":
+        process_nyu(model, processor, device)
     else:
-        # Multi-session: scan subdirectories
-        total = 0
-        sessions = sorted(os.listdir(args.data_dir))
-        for subdir in sessions:
-            sub_img_dir = os.path.join(args.data_dir, subdir, "images")
-            if os.path.isdir(sub_img_dir):
-                print(f"\nProcessing session: {subdir}")
-                total += process_directory(
-                    sub_img_dir, model, processor, device, args.force
-                )
+        process_mcu_sessions(model, processor, device)
 
-        print(f"\n{'═' * 55}")
-        print(f"  Total: {total} depth maps across {len(sessions)} sessions")
-        print(f"{'═' * 55}")
+    print("\n✓ Depth generation complete.")
 
 
 if __name__ == "__main__":
