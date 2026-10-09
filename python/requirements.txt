@@ -5,3 +5,7 @@ Pillow>=9.0
 opencv-python>=4.7
 tensorboard>=2.12
 timm>=0.9
+transformers>=4.35
+onnx>=1.14
+onnx2tf>=1.17
+tensorflow>=2.14

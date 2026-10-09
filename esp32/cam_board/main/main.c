@@ -51,8 +51,17 @@ static void collection_task(void *pvParam)
             continue;
         }
 
-        /* 2. Depth guard — placeholder until model deployed */
+        /* 2. Depth guard — run obstacle detector on downsampled frame */
         uint8_t obstacle_flag = 0;
+        {
+            /* Downsample JPEG to 48×48 RGB888 for depth guard */
+            static uint8_t dg_img[IMG_TARGET_SIZE];
+            image_downsample(fb->buf, fb->width, fb->height, dg_img);
+
+            bool blocked = false;
+            depth_guard_run(dg_img, &blocked);
+            obstacle_flag = blocked ? 1 : 0;
+        }
 
         /* 3. SPI exchange with Motor Board */
         uint8_t action_taken = ACTION_STOP;
@@ -120,8 +129,13 @@ static void navigation_task(void *pvParam)
             break;
         }
 
-        /* 4. Depth guard obstacle check (placeholder for now) */
+        /* 4. Depth guard obstacle check */
         uint8_t obstacle_flag = 0;
+        {
+            bool blocked = false;
+            depth_guard_run(s_img_buf, &blocked);
+            obstacle_flag = blocked ? 1 : 0;
+        }
 
         /* 5. Send features + obstacle to Motor Board via SPI */
         uint8_t action_taken = ACTION_STOP;
@@ -199,11 +213,20 @@ void app_main(void)
     ESP_ERROR_CHECK(camera_init_jpeg());
 
     /* Initialize SPI master */
-    ESP_LOGI(TAG, "[2/4] Initializing SPI master...");
+    ESP_LOGI(TAG, "[2/5] Initializing SPI master...");
     ESP_ERROR_CHECK(spi_master_init());
 
+    /* Initialize depth guard */
+    ESP_LOGI(TAG, "[3/5] Initializing depth guard...");
+    esp_err_t dg_ret = depth_guard_init();
+    if (dg_ret == ESP_OK) {
+        ESP_LOGI(TAG, "  Depth guard model loaded — obstacle detection active");
+    } else {
+        ESP_LOGW(TAG, "  Depth guard stub — obstacle detection disabled");
+    }
+
     /* Connect to WiFi */
-    ESP_LOGI(TAG, "[3/4] Connecting to WiFi...");
+    ESP_LOGI(TAG, "[4/5] Connecting to WiFi...");
     ESP_ERROR_CHECK(wifi_init_sta());
 
 #if defined(TEST_MODE) && TEST_MODE
@@ -214,7 +237,7 @@ void app_main(void)
     return;
 #else
     /* Start TCP server */
-    ESP_LOGI(TAG, "[4/4] Starting TCP server...");
+    ESP_LOGI(TAG, "[5/5] Starting TCP server...");
     ESP_ERROR_CHECK(stream_server_start(STREAM_DEFAULT_PORT));
 
     /* Try to initialize encoder — determines mode */
