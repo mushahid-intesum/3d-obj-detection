@@ -7,4 +7,5 @@ tensorboard>=2.12
 timm>=0.9
 transformers>=4.35
 datasets>=2.14
-ai-edge-torch>=0.3
+litert-torch>=0.8
+ai-edge-quantizer>=0.1
