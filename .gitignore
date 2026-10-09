@@ -32,3 +32,5 @@ outputs/
 esp32/cam_board/main/model/
 python/checkpoints/
 python/data/
+
+managed_components/

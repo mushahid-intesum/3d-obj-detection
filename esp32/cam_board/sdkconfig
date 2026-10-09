@@ -976,6 +976,19 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
+# ESP-NN
+#
+# default:
+# CONFIG_NN_ANSI_C is not set
+# default:
+CONFIG_NN_OPTIMIZED=y
+# default:
+CONFIG_NN_OPTIMIZATIONS=1
+# default:
+# CONFIG_NN_SKIP_NUDGE is not set
+# end of ESP-NN
+
+#
 # Compiler options
 #
 # default:

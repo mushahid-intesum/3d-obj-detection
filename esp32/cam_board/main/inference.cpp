@@ -27,7 +27,7 @@ static const char *TAG = "inference";
  *  Uncomment the next line once depth_guard_model.h has been generated
  *  by train_depth_guard.py:
  * ══════════════════════════════════════════════════════════════════════════ */
-// #define DEPTH_GUARD_MODEL_AVAILABLE
+#define DEPTH_GUARD_MODEL_AVAILABLE
 
 #ifdef DEPTH_GUARD_MODEL_AVAILABLE
 
