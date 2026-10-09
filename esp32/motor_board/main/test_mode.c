@@ -33,11 +33,6 @@
 
 static const char *TAG = "mot_test";
 
-<<<<<<< HEAD
-/* ── Test server config — edit here ── */
-#define TEST_SERVER_IP     "192.168.68.108"
-#define TEST_SERVER_PORT   9999
-=======
 /* ── Test server config ── */
 #ifndef TEST_SERVER_IP
 #define TEST_SERVER_IP   "192.168.68.108"
@@ -45,11 +40,10 @@ static const char *TAG = "mot_test";
 #ifndef TEST_SERVER_PORT
 #define TEST_SERVER_PORT 8888
 #endif
->>>>>>> 03f063b (moha)
 
 /* WiFi config — must match Camera Board's network */
-#define TEST_WIFI_SSID     "YOUR_SSID"
-#define TEST_WIFI_PASSWORD "YOUR_PASS"
+#define TEST_WIFI_SSID     "Network"
+#define TEST_WIFI_PASSWORD "Excels!or"
 
 #define TEST_MAGIC_0 'T'
 #define TEST_MAGIC_1 'S'
@@ -309,21 +303,16 @@ static void handle_t6_motor(const char *raw_json)
     ESP_LOGI(TAG, "T6: Executing motor action: %s (%d ms)", name, duration);
 
     /* Execute the motor action */
-    switch (action) {
-        case ACTION_FORWARD:
-            motor_forward(duration > 0 ? (uint32_t)duration : FORWARD_MS);
-            break;
-        case ACTION_TURN_RIGHT:
-            motor_turn_right(duration > 0 ? (uint32_t)duration : TURN_45_MS);
-            break;
-        case ACTION_TURN_LEFT:
-            motor_turn_left(duration > 0 ? (uint32_t)duration : TURN_45_MS);
-            break;
-        case ACTION_STOP:
-        default:
-            motor_stop();
-            break;
-    }
+
+    motor_forward(5000);
+    motor_turn_right(5000);
+    motor_turn_left(5000);
+    motor_reverse(5000);
+
+    motor_forward(5000);
+    motor_turn_right(5000);
+    motor_turn_left(5000);
+    motor_reverse(5000);
 
     ESP_LOGI(TAG, "T6: Motor action %s complete", name);
 

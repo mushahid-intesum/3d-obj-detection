@@ -136,7 +136,7 @@ def process_nyu(model, processor, device):
     from datasets import load_dataset
 
     print(f"\nLoading {NYU_DATASET_ID} from HuggingFace...")
-    ds = load_dataset(NYU_DATASET_ID)
+    ds = load_dataset(NYU_DATASET_ID, trust_remote_code=True)
 
     for split_name in ["train", "validation"]:
         split = ds[split_name]

@@ -27,8 +27,8 @@ static const char *TAG = "imu";
 /* UART config */
 #define IMU_UART_NUM      UART_NUM_1
 #define IMU_UART_BAUD     115200
-#define IMU_UART_RX_PIN   3       /* ESP32 GPIO for UART1 RX */
-#define IMU_UART_TX_PIN   48      /* ESP32 GPIO for UART1 TX */
+// #define IMU_UART_RX_PIN   3       /* ESP32 GPIO for UART1 RX */
+// #define IMU_UART_TX_PIN   48      /* ESP32 GPIO for UART1 TX */
 #define IMU_UART_BUF_SIZE 256
 #define IMU_LINE_BUF_SIZE 64
 

@@ -93,8 +93,8 @@ void motor_stop(void)
 
 void motor_forward(uint32_t duration_ms)
 {
-    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);
-    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);
+    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  
+    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  
     set_speed(MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
@@ -102,8 +102,8 @@ void motor_forward(uint32_t duration_ms)
 
 void motor_reverse(uint32_t duration_ms)
 {
-    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);
-    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);
+    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);  
+    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);  
     set_speed(MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
@@ -111,8 +111,8 @@ void motor_reverse(uint32_t duration_ms)
 
 void motor_turn_right(uint32_t duration_ms)
 {
-    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);  /* left fwd  */
-    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);  /* right rev */
+    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);  
+    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  
     set_speed(MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
@@ -120,8 +120,8 @@ void motor_turn_right(uint32_t duration_ms)
 
 void motor_turn_left(uint32_t duration_ms)
 {
-    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  /* left rev  */
-    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  /* right fwd */
+    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  
+    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);  
     set_speed(MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
