@@ -191,44 +191,53 @@ def _get_tflite_input_details(tflite_path):
 
 def quantize_to_int8(fp32_path, int8_path):
     """Quantize FP32 .tflite to INT8 using ai-edge-quantizer."""
-    from ai_edge_quantizer import quantizer, recipe
+    from ai_edge_quantizer import quantizer
 
     print("[Step 2] Quantizing FP32 → INT8...")
 
     qt = quantizer.Quantizer(fp32_path)
 
-    # Use built-in static INT8 recipe:
+    # Use built-in static INT8 recipe (string form):
     # Weights=INT8, Activations=INT8 (full integer SRQ)
-    qt.load_quantization_recipe(recipe.static_wi8_ai8())
+    qt.load_quantization_recipe("static_wi8_ai8")
 
-    # Collect calibration data
-    cal_samples = collect_calibration_data()
-    if cal_samples is not None:
-        sig_name, input_name, input_shape = _get_tflite_input_details(fp32_path)
+    # Calibrate (required for static quantization)
+    calibration_result = None
+    if qt.need_calibration:
+        cal_samples = collect_calibration_data()
+        if cal_samples is not None:
+            sig_name, input_name, input_shape = _get_tflite_input_details(
+                fp32_path
+            )
 
-        # Reshape calibration data to match tflite input shape if needed
-        # litert_torch may convert NCHW→NHWC during export
-        sample_shape = cal_samples[0].shape  # (1, C, H, W)
-        tflite_shape = tuple(input_shape)
-        if sample_shape != tflite_shape:
-            print(f"  Reshaping calibration: {sample_shape} → {tflite_shape}")
-            cal_samples = [np.transpose(s, (0, 2, 3, 1)) for s in cal_samples]
+            # Reshape calibration data to match tflite input layout
+            # litert_torch may convert NCHW→NHWC during export
+            sample_shape = cal_samples[0].shape  # (1, C, H, W)
+            tflite_shape = tuple(input_shape)
+            if sample_shape != tflite_shape:
+                print(f"  Reshaping: {sample_shape} → {tflite_shape}")
+                cal_samples = [
+                    np.transpose(s, (0, 2, 3, 1)) for s in cal_samples
+                ]
 
-        # calibrate() expects: {signature_name: list_of_input_dicts}
-        calibration_data = {
-            sig_name: [
-                {input_name: sample} for sample in cal_samples
-            ]
-        }
-        print(f"  Running calibration ({len(cal_samples)} samples)...")
-        qt.calibrate(calibration_data)
-        print(f"  ✓ Calibration complete")
-    else:
-        print("  [WARN] No calibration data — quantization may be inaccurate")
+            # calibrate() expects: {signature: list_of_input_dicts}
+            # Returns: calibration_result (QSVs)
+            calibration_data = {
+                sig_name: [
+                    {input_name: sample} for sample in cal_samples
+                ]
+            }
+            print(f"  Running calibration ({len(cal_samples)} samples)...")
+            calibration_result = qt.calibrate(calibration_data)
+            print(f"  ✓ Calibration complete")
+        else:
+            print("  [WARN] No calibration data available")
 
-    # Quantize and export
-    qt.quantize()
-    qt.export_model(int8_path)
+    # quantize() takes calibration_result and returns a QuantizationResult
+    result = qt.quantize(calibration_result=calibration_result)
+
+    # export_model() is on the QuantizationResult object
+    result.export_model(int8_path)
 
     size_kb = os.path.getsize(int8_path) / 1024
     print(f"  ✓ INT8 .tflite saved: {int8_path} ({size_kb:.1f} KB)")
