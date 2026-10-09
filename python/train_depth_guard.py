@@ -32,8 +32,8 @@ CENTER_STRIP_FRAC  = 0.4          # fraction of width treated as "ahead"
 OBSTACLE_THRESHOLD = 0.65         # DA-V2 disparity > this → blocked
 BALANCE_WEIGHT     = True
 
-# Model
-STUDENT_CHANNELS   = [8, 16, 32]  # depthwise-separable layers
+# Model — 4-stage hierarchical encoder (mini Depth Anything)
+STAGE_CHANNELS     = [16, 24, 48, 96]
 
 # Training
 LR                 = 3e-4
@@ -45,7 +45,13 @@ SEED               = 42
 
 
 # ═══════════════════════════════════════════════
-#  Student Model: TinyDepthNet
+#  Student Model: MicroDepthAnything
+#
+#  Miniature Depth Anything V2 — 4-stage hierarchical encoder
+#  mirroring DA-V2's DINOv2 backbone + DPT head structure.
+#
+#  Stage channels: [16, 24, 48, 96] at resolutions [24², 12², 6², 3²]
+#  ~25K params → ~25KB INT8 for ESP32-S3
 # ═══════════════════════════════════════════════
 
 class DepthwiseSeparableConv(nn.Module):
@@ -67,43 +73,69 @@ class DepthwiseSeparableConv(nn.Module):
         return F.relu(x, inplace=True)
 
 
-class TinyDepthNet(nn.Module):
+class MicroDepthAnything(nn.Module):
     """
-    Ultra-lightweight obstacle detector for ESP32-S3.
+    Miniature Depth Anything V2 student model (~25K params).
 
-    Input:  (B, 3, 48, 48) RGB image
-    Output: (B, 1) obstacle logit (apply sigmoid for probability)
+    Mirrors DA-V2's hierarchical design:
+      - Stem: patch embedding (3→C0) like DINOv2's patch projection
+      - Stage 1–3: paired depthwise-separable blocks at decreasing
+        resolutions, analogous to DINOv2's multi-scale features
+      - Head: global pool → 2-layer MLP classifier
 
-    Uses depthwise-separable convolutions for minimum parameter count.
-    Target: <20KB INT8.
+    Input:  (B, 3, 48, 48)  RGB image
+    Output: (B, 1)          obstacle logit (sigmoid → probability)
+
+    48×48 → stem[24²] → S1[12²] → S2[6²] → S3[3²] → GAP → MLP → 1
     """
 
     def __init__(self, channels=None):
         super().__init__()
         if channels is None:
-            channels = STUDENT_CHANNELS
+            channels = STAGE_CHANNELS
+        c0, c1, c2, c3 = channels
 
-        self.features = nn.Sequential(
-            # 48×48 → 24×24
-            nn.Conv2d(3, channels[0], 3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(channels[0]),
+        # Stem — patch embedding (like DINOv2 patch projection)
+        # 48×48 → 24×24
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, c0, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(c0),
             nn.ReLU(inplace=True),
-
-            # 24×24 → 12×12
-            DepthwiseSeparableConv(channels[0], channels[1], stride=2),
-
-            # 12×12 → 6×6
-            DepthwiseSeparableConv(channels[1], channels[2], stride=2),
         )
 
-        self.classifier = nn.Sequential(
+        # Stage 1 — 24×24 → 12×12
+        self.stage1 = nn.Sequential(
+            DepthwiseSeparableConv(c0, c1, stride=2),
+            DepthwiseSeparableConv(c1, c1, stride=1),
+        )
+
+        # Stage 2 — 12×12 → 6×6
+        self.stage2 = nn.Sequential(
+            DepthwiseSeparableConv(c1, c2, stride=2),
+            DepthwiseSeparableConv(c2, c2, stride=1),
+        )
+
+        # Stage 3 — 6×6 → 3×3
+        self.stage3 = nn.Sequential(
+            DepthwiseSeparableConv(c2, c3, stride=2),
+            DepthwiseSeparableConv(c3, c3, stride=1),
+        )
+
+        # Classification head — DPT-style projection + classifier
+        self.head = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(channels[2], 1),
+            nn.Linear(c3, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 1),
         )
 
     def forward(self, x):
-        return self.classifier(self.features(x))
+        x = self.stem(x)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        return self.head(x)
 
     def predict(self, x):
         return torch.sigmoid(self.forward(x))
@@ -437,7 +469,7 @@ def main():
     print("═" * 60)
     print("  Depth Guard — Depth Anything V2 Distillation")
     print(f"  Teacher:  Depth Anything V2 Small (25M params)")
-    print(f"  Student:  TinyDepthNet ({STUDENT_CHANNELS})")
+    print(f"  Student:  MicroDepthAnything ({STAGE_CHANNELS})")
     print(f"  Source:   {SOURCE.upper()}")
     print(f"  Device:   {DEVICE}")
     print("═" * 60)
@@ -482,7 +514,7 @@ def main():
 
     # Model
     device = torch.device(DEVICE)
-    model = TinyDepthNet().to(device)
+    model = MicroDepthAnything().to(device)
     n_params = model.count_params()
     est_size = model.model_size_kb()
 
@@ -493,7 +525,7 @@ def main():
             torch.load(RESUME_FROM, map_location=device, weights_only=True)
         )
 
-    print(f"\n[Model] TinyDepthNet: {n_params:,} params "
+    print(f"\n[Model] MicroDepthAnything: {n_params:,} params "
           f"(~{est_size:.1f} KB INT8)")
 
     # Class-balanced loss

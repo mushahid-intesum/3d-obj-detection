@@ -43,12 +43,12 @@ N_CALIBRATION      = 200         # Number of calibration samples for INT8
 
 # Model architecture (must match train_depth_guard.py)
 IMG_SIZE           = 48
-STUDENT_CHANNELS   = [8, 16, 32]
+STAGE_CHANNELS     = [16, 24, 48, 96]
 # ═══════════════════════════════════════════════
 
 
-# ─── Import TinyDepthNet from training script ───
-# Re-define here to keep this script self-contained.
+# ─── MicroDepthAnything — self-contained copy ───
+# Must match the class in train_depth_guard.py exactly.
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -71,26 +71,44 @@ class DepthwiseSeparableConv(nn.Module):
         return F.relu(x, inplace=True)
 
 
-class TinyDepthNet(nn.Module):
+class MicroDepthAnything(nn.Module):
     def __init__(self, channels=None):
         super().__init__()
         if channels is None:
-            channels = STUDENT_CHANNELS
-        self.features = nn.Sequential(
-            nn.Conv2d(3, channels[0], 3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(channels[0]),
+            channels = STAGE_CHANNELS
+        c0, c1, c2, c3 = channels
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, c0, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(c0),
             nn.ReLU(inplace=True),
-            DepthwiseSeparableConv(channels[0], channels[1], stride=2),
-            DepthwiseSeparableConv(channels[1], channels[2], stride=2),
         )
-        self.classifier = nn.Sequential(
+        self.stage1 = nn.Sequential(
+            DepthwiseSeparableConv(c0, c1, stride=2),
+            DepthwiseSeparableConv(c1, c1, stride=1),
+        )
+        self.stage2 = nn.Sequential(
+            DepthwiseSeparableConv(c1, c2, stride=2),
+            DepthwiseSeparableConv(c2, c2, stride=1),
+        )
+        self.stage3 = nn.Sequential(
+            DepthwiseSeparableConv(c2, c3, stride=2),
+            DepthwiseSeparableConv(c3, c3, stride=1),
+        )
+        self.head = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(channels[2], 1),
+            nn.Linear(c3, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 1),
         )
 
     def forward(self, x):
-        return self.classifier(self.features(x))
+        x = self.stem(x)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        return self.head(x)
 
     def count_params(self):
         return sum(p.numel() for p in self.parameters())
@@ -301,14 +319,14 @@ def main():
         print(f"  Run train_depth_guard.py first.")
         return
 
-    model = TinyDepthNet()
+    model = MicroDepthAnything()
     model.load_state_dict(
         torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=True)
     )
     model.eval()
 
     n_params = model.count_params()
-    print(f"  TinyDepthNet: {n_params:,} params")
+    print(f"  MicroDepthAnything: {n_params:,} params")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 

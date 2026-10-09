@@ -5,7 +5,7 @@ idf_component_register(
         "wifi_stream.c"
         "spi_master.c"
         "image_proc.c"
-        "inference.c"
+        "inference.cpp"
         "test_mode.c"
     INCLUDE_DIRS
         "include"
