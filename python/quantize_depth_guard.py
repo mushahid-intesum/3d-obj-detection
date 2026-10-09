@@ -156,18 +156,38 @@ def collect_calibration_data():
     return cal_samples
 
 
-def _get_input_name(tflite_path):
-    """Read input tensor name from a .tflite flatbuffer."""
+def _get_tflite_input_details(tflite_path):
+    """Read input tensor name and shape from a .tflite flatbuffer."""
+    # Use ai_edge_quantizer's own tflite reading (no TF dependency)
+    import flatbuffers
+    from tflite_runtime.interpreter import Interpreter as TFLInterpreter
+    try:
+        interp = TFLInterpreter(model_path=tflite_path)
+        interp.allocate_tensors()
+        details = interp.get_input_details()[0]
+        name = details["name"]
+        shape = details["shape"]
+        print(f"  Input tensor: name='{name}', shape={shape}")
+        return name, shape
+    except Exception:
+        pass
+
+    # Fallback: try tensorflow
     try:
         import tensorflow as tf
         interp = tf.lite.Interpreter(model_path=tflite_path)
         interp.allocate_tensors()
-        name = interp.get_input_details()[0]["name"]
-        print(f"  Input tensor name: {name}")
-        return name
+        details = interp.get_input_details()[0]
+        name = details["name"]
+        shape = details["shape"]
+        print(f"  Input tensor: name='{name}', shape={shape}")
+        return name, shape
     except Exception:
-        # Default name used by litert_torch export
-        return "args_0"
+        pass
+
+    # Last resort: guess
+    print("  [WARN] Could not read input details, using default 'args_0'")
+    return "args_0", [1, 3, IMG_SIZE, IMG_SIZE]
 
 
 def quantize_to_int8(fp32_path, int8_path):
@@ -185,15 +205,25 @@ def quantize_to_int8(fp32_path, int8_path):
     # Collect calibration data
     cal_samples = collect_calibration_data()
     if cal_samples is not None:
-        input_name = _get_input_name(fp32_path)
+        input_name, input_shape = _get_tflite_input_details(fp32_path)
 
-        # calibrate() expects: {signature: iterable_of_input_dicts}
-        # Each item yielded is a dict mapping input tensor name → numpy array
-        def cal_generator():
-            for sample in cal_samples:
-                yield {input_name: sample}
+        # Reshape calibration data to match tflite input shape if needed
+        # litert_torch may convert NCHW→NHWC during export
+        sample_shape = cal_samples[0].shape  # (1, C, H, W)
+        tflite_shape = tuple(input_shape)
+        if sample_shape != tflite_shape:
+            print(f"  Reshaping calibration: {sample_shape} → {tflite_shape}")
+            cal_samples = [np.transpose(s, (0, 2, 3, 1)) for s in cal_samples]
 
-        qt.calibrate({"serving_default": cal_generator()})
+        # calibrate() expects: {signature: list_of_input_dicts}
+        calibration_data = {
+            "serving_default": [
+                {input_name: sample} for sample in cal_samples
+            ]
+        }
+        print(f"  Running calibration ({len(cal_samples)} samples)...")
+        qt.calibrate(calibration_data)
+        print(f"  ✓ Calibration complete")
     else:
         print("  [WARN] No calibration data — quantization may be inaccurate")
 
