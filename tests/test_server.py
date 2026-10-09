@@ -333,10 +333,11 @@ class TestServer:
     def test_3_motor_spi_dummy(self):
         name = "T3: Motor SPI Receive (dummy data)"
         try:
-            # Tell camera to send a dummy SPI exchange
-            send_test_msg(self.cam_sock, {"cmd": "t3_spi_send"})
-            # Tell motor to listen for SPI and report
+            # Tell motor to listen for SPI FIRST (so slave is ready)
             send_test_msg(self.mot_sock, {"cmd": "t3_spi_recv"})
+            time.sleep(0.5)  # Let motor set up SPI slave
+            # Then tell camera to send a dummy SPI exchange
+            send_test_msg(self.cam_sock, {"cmd": "t3_spi_send"})
 
             # Wait for motor board to report SPI reception
             mot_result = recv_test_msg(self.mot_sock, timeout=15)
@@ -406,6 +407,7 @@ class TestServer:
         try:
             # Tell motor to prepare SPI response with current heading
             send_test_msg(self.mot_sock, {"cmd": "t5_spi_respond"})
+            time.sleep(0.5)  # Let motor set up SPI slave
             # Tell camera to do a full cycle: capture + SPI exchange + send IMG4
             send_test_msg(self.cam_sock, {"cmd": "t5_full_cycle"})
 

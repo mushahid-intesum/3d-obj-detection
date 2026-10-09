@@ -13,6 +13,7 @@
 #include "config.h"
 #include "esp_log.h"
 #include "driver/spi_master.h"
+#include "freertos/FreeRTOS.h"
 #include <string.h>
 
 static const char *TAG = "spi_master";
@@ -81,9 +82,17 @@ esp_err_t spi_exchange_collection(uint8_t obstacle,
         .rx_buffer = rx_buf,
     };
 
-    esp_err_t ret = spi_device_transmit(s_spi_dev, &t);
+    /* Use queued transaction with timeout to avoid blocking forever */
+    esp_err_t ret = spi_device_queue_trans(s_spi_dev, &t, pdMS_TO_TICKS(5000));
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "SPI transaction failed: 0x%x", ret);
+        ESP_LOGW(TAG, "SPI queue failed: 0x%x", ret);
+        return ret;
+    }
+
+    spi_transaction_t *rtrans;
+    ret = spi_device_get_trans_result(s_spi_dev, &rtrans, pdMS_TO_TICKS(5000));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SPI transaction timeout: 0x%x", ret);
         return ret;
     }
 
@@ -125,7 +134,11 @@ esp_err_t spi_exchange_nav_features(uint8_t obstacle,
         .rx_buffer = rx_buf,
     };
 
-    esp_err_t ret = spi_device_transmit(s_spi_dev, &t);
+    esp_err_t ret = spi_device_queue_trans(s_spi_dev, &t, pdMS_TO_TICKS(5000));
+    if (ret != ESP_OK) return ret;
+
+    spi_transaction_t *rtrans;
+    ret = spi_device_get_trans_result(s_spi_dev, &rtrans, pdMS_TO_TICKS(5000));
     if (ret != ESP_OK) return ret;
 
     /* Parse first 6 bytes of MISO */

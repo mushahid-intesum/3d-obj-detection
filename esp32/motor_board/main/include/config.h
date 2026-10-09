@@ -35,10 +35,10 @@
  *  Arduino IMU (UART1)
  *
  *  Arduino Nano 33 BLE Rev2 sends "H:<heading>\n" at 50Hz.
- *  Wiring: Arduino TX → ESP32 GPIO 3, GND → GND.
+ *  Wiring: Arduino TX (D0) → ESP32 GPIO 13, GND → GND.
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define IMU_UART_RX_PIN   3
-#define IMU_UART_TX_PIN   48
+#define IMU_UART_RX_PIN   13
+#define IMU_UART_TX_PIN   21
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  SPI Slave — from Camera Board (ESP32 #1)
