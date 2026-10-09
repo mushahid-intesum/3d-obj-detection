@@ -43,7 +43,7 @@ static const char *TAG = "mot_test";
 #define TEST_SERVER_IP   "192.168.68.108"
 #endif
 #ifndef TEST_SERVER_PORT
-#define TEST_SERVER_PORT 9999
+#define TEST_SERVER_PORT 8888
 #endif
 >>>>>>> 03f063b (moha)
 

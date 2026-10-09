@@ -452,9 +452,9 @@ class TestServer:
         name = "T6: Motor Rotation"
         try:
             actions_to_test = [
-                {"action": 0, "name": "FORWARD",    "duration_ms": 300},
-                {"action": 2, "name": "TURN_LEFT",  "duration_ms": 200},
-                {"action": 1, "name": "TURN_RIGHT", "duration_ms": 200},
+                {"action": 0, "name": "FORWARD",    "duration_ms": 3000},
+                {"action": 2, "name": "TURN_LEFT",  "duration_ms": 2000},
+                {"action": 1, "name": "TURN_RIGHT", "duration_ms": 2000},
                 {"action": 3, "name": "STOP",       "duration_ms": 0},
             ]
 
