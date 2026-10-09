@@ -26,7 +26,6 @@ Usage:
 import os
 import glob
 import time
-import struct
 
 
 import numpy as np
@@ -65,9 +64,6 @@ BATCH_SIZE         = 64
 EPOCHS             = 80
 VAL_SPLIT          = 0.15
 SEED               = 42
-
-# TFLite export
-TFLITE_OPSET       = 13
 # ═══════════════════════════════════════════════
 
 
@@ -306,85 +302,97 @@ def eval_epoch(model, loader, criterion, device):
 
 
 # ═══════════════════════════════════════════════
-#  TFLite INT8 Export
+#  LiteRT INT8 Export (via ai_edge_torch)
 # ═══════════════════════════════════════════════
 
 def export_tflite_int8(model, output_path, calibration_loader, device,
                        n_cal=200):
     """
-    Export PyTorch model to INT8 TFLite via ONNX → TensorFlow → TFLite.
+    Export PyTorch model to INT8 LiteRT (.tflite) via ai_edge_torch.
 
-    Requires: pip install onnx onnx2tf tensorflow
+    Direct path: PyTorch → ai_edge_torch.convert() → .tflite
+    With PT2E quantization for full INT8.
+
+    Requires: pip install ai-edge-torch
     """
-    import onnx
-
     model.eval().cpu()
-    dummy = torch.randn(1, 3, IMG_SIZE, IMG_SIZE)
+    sample_input = (torch.randn(1, 3, IMG_SIZE, IMG_SIZE),)
 
-    # Step 1: PyTorch → ONNX
-    onnx_path = output_path.replace(".tflite", ".onnx")
-    torch.onnx.export(
-        model, dummy, onnx_path,
-        input_names=["image"],
-        output_names=["obstacle_logit"],
-        opset_version=TFLITE_OPSET,
-        dynamic_axes=None,
-    )
-    print(f"[Export] ONNX saved: {onnx_path}")
-    onnx_model = onnx.load(onnx_path)
-    onnx.checker.check_model(onnx_model)
-    print(f"[Export] ONNX validation passed")
-
-    # Step 2: ONNX → TFLite INT8
-    try:
-        import tensorflow as tf
-
-        savedmodel_dir = output_path.replace(".tflite", "_saved_model")
-        os.system(f"onnx2tf -i {onnx_path} -o {savedmodel_dir} -osd -nuo")
-
-        # Collect calibration data from NYU training set
-        cal_data = []
-        for imgs, _ in calibration_loader:
-            for img in imgs:
-                cal_data.append(img.numpy())
-                if len(cal_data) >= n_cal:
-                    break
+    # Collect calibration data
+    cal_data = []
+    for imgs, _ in calibration_loader:
+        for img in imgs:
+            cal_data.append(img.unsqueeze(0))
             if len(cal_data) >= n_cal:
                 break
-        cal_data = np.array(cal_data, dtype=np.float32)
-        print(f"[Export] Calibration samples: {len(cal_data)}")
+        if len(cal_data) >= n_cal:
+            break
+    print(f"[Export] Calibration samples: {len(cal_data)}")
 
-        def representative_dataset():
-            for i in range(len(cal_data)):
-                yield [cal_data[i:i + 1]]
+    try:
+        import ai_edge_torch
+        from ai_edge_torch.quantize import pt2e_quantizer
+        from torch.ao.quantization.quantize_pt2e import (
+            prepare_pt2e, convert_pt2e
+        )
 
-        # Full integer quantization
-        converter = tf.lite.TFLiteConverter.from_saved_model(savedmodel_dir)
-        converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        converter.representative_dataset = representative_dataset
-        converter.target_spec.supported_ops = [
-            tf.lite.OpsSet.TFLITE_BUILTINS_INT8
-        ]
-        converter.inference_input_type = tf.int8
-        converter.inference_output_type = tf.int8
+        # Set up PT2E quantizer for full INT8
+        quantizer = pt2e_quantizer.PT2EQuantizer().set_global(
+            pt2e_quantizer.get_symmetric_quantization_config(
+                is_per_channel=True, is_dynamic=False
+            )
+        )
 
-        tflite_model = converter.convert()
+        # Export → prepare → calibrate → convert → save
+        exported = torch.export.export(model, sample_input)
+        prepared = prepare_pt2e(exported, quantizer)
 
-        with open(output_path, "wb") as f:
-            f.write(tflite_model)
+        # Calibrate with real data
+        with torch.no_grad():
+            for cal_input in cal_data:
+                prepared(cal_input)
 
-        size_kb = len(tflite_model) / 1024
-        print(f"[Export] TFLite INT8 saved: {output_path} ({size_kb:.1f} KB)")
+        quantized = convert_pt2e(prepared)
 
+        # Convert to LiteRT
+        edge_model = ai_edge_torch.convert(quantized, sample_input)
+        edge_model.export(output_path)
+
+        size_kb = os.path.getsize(output_path) / 1024
+        print(f"[Export] LiteRT INT8 saved: {output_path} ({size_kb:.1f} KB)")
         return output_path
 
     except ImportError:
-        print("[Export] tensorflow or onnx2tf not installed.")
-        print(f"  To convert manually:")
-        print(f"    pip install onnx2tf tensorflow")
-        print(f"    onnx2tf -i {onnx_path} -o saved_model -osd")
-        print(f"    Then quantize with tf.lite.TFLiteConverter.")
-        return onnx_path
+        print("[Export] ai_edge_torch not installed.")
+        print("  Install: pip install ai-edge-torch")
+
+        # Fallback: save FP32 .pt for manual conversion
+        fallback_path = output_path.replace(".tflite", ".pt")
+        torch.save(model.state_dict(), fallback_path)
+        print(f"[Export] Saved FP32 weights: {fallback_path}")
+        print(f"  Convert manually with ai_edge_torch later.")
+        return fallback_path
+
+    except Exception as e:
+        print(f"[Export] PT2E quantization failed: {e}")
+        print("[Export] Falling back to FP32 LiteRT export...")
+
+        try:
+            import ai_edge_torch
+            edge_model = ai_edge_torch.convert(model, sample_input)
+            fp32_path = output_path.replace(".tflite", "_fp32.tflite")
+            edge_model.export(fp32_path)
+
+            size_kb = os.path.getsize(fp32_path) / 1024
+            print(f"[Export] FP32 LiteRT saved: {fp32_path} ({size_kb:.1f} KB)")
+            print("  Quantize with: ai-edge-quantizer")
+            return fp32_path
+
+        except Exception as e2:
+            print(f"[Export] FP32 export also failed: {e2}")
+            fallback_path = output_path.replace(".tflite", ".pt")
+            torch.save(model.state_dict(), fallback_path)
+            return fallback_path
 
 
 def export_c_header(tflite_path, header_path):
