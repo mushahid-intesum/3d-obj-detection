@@ -133,7 +133,7 @@ def convert_to_fp32_tflite(model, output_path):
 # ═══════════════════════════════════════════════
 
 def collect_calibration_data():
-    """Load calibration images from NYU cache."""
+    """Load calibration images from NYU cache as list of numpy arrays."""
     img_dir = os.path.join(NYU_CACHE_DIR, "train", "images")
     if not os.path.isdir(img_dir):
         print(f"  [WARN] No calibration data at {img_dir}")
@@ -142,7 +142,7 @@ def collect_calibration_data():
     image_files = sorted(glob.glob(os.path.join(img_dir, "*.jpg")))
     n = min(len(image_files), N_CALIBRATION)
 
-    cal_data = []
+    cal_samples = []
     for img_path in image_files[:n]:
         img = Image.open(img_path).convert("RGB")
         if img.size != (IMG_SIZE, IMG_SIZE):
@@ -150,11 +150,24 @@ def collect_calibration_data():
         arr = np.array(img, dtype=np.float32) / 255.0
         # (H, W, C) → (1, C, H, W)
         arr = np.transpose(arr, (2, 0, 1))[np.newaxis, ...]
-        cal_data.append(arr)
+        cal_samples.append(arr)
 
-    cal_data = np.concatenate(cal_data, axis=0)
-    print(f"  Calibration data: {cal_data.shape} ({n} samples)")
-    return cal_data
+    print(f"  Calibration samples: {n}")
+    return cal_samples
+
+
+def _get_input_name(tflite_path):
+    """Read input tensor name from a .tflite flatbuffer."""
+    try:
+        import tensorflow as tf
+        interp = tf.lite.Interpreter(model_path=tflite_path)
+        interp.allocate_tensors()
+        name = interp.get_input_details()[0]["name"]
+        print(f"  Input tensor name: {name}")
+        return name
+    except Exception:
+        # Default name used by litert_torch export
+        return "args_0"
 
 
 def quantize_to_int8(fp32_path, int8_path):
@@ -169,10 +182,18 @@ def quantize_to_int8(fp32_path, int8_path):
     # Weights=INT8, Activations=INT8 (full integer SRQ)
     qt.load_quantization_recipe(recipe.static_wi8_ai8())
 
-    # Collect and run calibration (required for static quantization)
-    cal_data = collect_calibration_data()
-    if cal_data is not None:
-        qt.calibrate(cal_data)
+    # Collect calibration data
+    cal_samples = collect_calibration_data()
+    if cal_samples is not None:
+        input_name = _get_input_name(fp32_path)
+
+        # calibrate() expects: {signature: iterable_of_input_dicts}
+        # Each item yielded is a dict mapping input tensor name → numpy array
+        def cal_generator():
+            for sample in cal_samples:
+                yield {input_name: sample}
+
+        qt.calibrate({"serving_default": cal_generator()})
     else:
         print("  [WARN] No calibration data — quantization may be inaccurate")
 
