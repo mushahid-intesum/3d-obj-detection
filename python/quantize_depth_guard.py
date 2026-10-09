@@ -159,39 +159,40 @@ def collect_calibration_data():
 
 def quantize_to_int8(fp32_path, int8_path):
     """Quantize FP32 .tflite to INT8 using ai-edge-quantizer."""
-    from ai_edge_quantizer import quantizer
+    from ai_edge_quantizer import quantizer, qtyping
 
     print("[Step 2] Quantizing FP32 → INT8...")
 
     qt = quantizer.Quantizer(fp32_path)
 
-    # Apply full integer static quantization recipe
-    # This quantizes both weights and activations to INT8
+    # Full integer static quantization (SRQ):
+    # Both weights and activations quantized to INT8.
+    # execution_mode=SRQ is required when both tensors are quantized.
     qt.update_quantization_recipe(
         regex=".*",
-        operation_name=quantizer.OperationName.ALL_SUPPORTED,
+        operation_name=qtyping.TFLOperationName.ALL_SUPPORTED,
         algorithm_key=quantizer.AlgorithmName.MIN_MAX_UNIFORM_QUANT,
-        op_config=quantizer.OpQuantizationConfig(
-            weight_tensor_config=quantizer.TensorQuantizationConfig(
+        op_config=quantizer._OpQuantizationConfig(
+            activation_tensor_config=quantizer._TensorQuantizationConfig(
                 num_bits=8,
                 symmetric=True,
-                granularity=quantizer.QuantGranularity.CHANNELWISE,
+                granularity=qtyping.QuantGranularity.TENSORWISE,
             ),
-            activation_tensor_config=quantizer.TensorQuantizationConfig(
+            weight_tensor_config=quantizer._TensorQuantizationConfig(
                 num_bits=8,
                 symmetric=True,
-                granularity=quantizer.QuantGranularity.TENSORWISE,
+                granularity=qtyping.QuantGranularity.CHANNELWISE,
             ),
+            execution_mode=qtyping.OpExecutionMode.SRQ,
         ),
     )
 
-    # Collect calibration data
+    # Collect and run calibration (required for SRQ)
     cal_data = collect_calibration_data()
     if cal_data is not None:
-        # Build calibration dataset as dict: {input_name: data}
-        # The ai-edge-quantizer needs numpy arrays for calibration
-        calibration_dataset = {"serving_default_x:0": cal_data}
-        qt.calibrate(calibration_dataset)
+        calibration_result = qt.calibrate(cal_data)
+    else:
+        print("  [WARN] No calibration data — quantization may be inaccurate")
 
     # Quantize and export
     qt.quantize()
