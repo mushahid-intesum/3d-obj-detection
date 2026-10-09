@@ -157,37 +157,36 @@ def collect_calibration_data():
 
 
 def _get_tflite_input_details(tflite_path):
-    """Read input tensor name and shape from a .tflite flatbuffer."""
-    # Use ai_edge_quantizer's own tflite reading (no TF dependency)
-    import flatbuffers
-    from tflite_runtime.interpreter import Interpreter as TFLInterpreter
-    try:
-        interp = TFLInterpreter(model_path=tflite_path)
-        interp.allocate_tensors()
-        details = interp.get_input_details()[0]
-        name = details["name"]
-        shape = details["shape"]
-        print(f"  Input tensor: name='{name}', shape={shape}")
-        return name, shape
-    except Exception:
-        pass
+    """Read signature input name and shape from a .tflite model.
 
-    # Fallback: try tensorflow
-    try:
-        import tensorflow as tf
-        interp = tf.lite.Interpreter(model_path=tflite_path)
-        interp.allocate_tensors()
-        details = interp.get_input_details()[0]
-        name = details["name"]
-        shape = details["shape"]
-        print(f"  Input tensor: name='{name}', shape={shape}")
-        return name, shape
-    except Exception:
-        pass
+    The calibrator looks up inputs by SIGNATURE parameter names,
+    not by internal tensor names. These can differ.
+    Returns: (signature_name, input_param_name, input_shape)
+    """
+    import tensorflow as tf
 
-    # Last resort: guess
-    print("  [WARN] Could not read input details, using default 'args_0'")
-    return "args_0", [1, 3, IMG_SIZE, IMG_SIZE]
+    interp = tf.lite.Interpreter(model_path=tflite_path)
+    interp.allocate_tensors()
+
+    # Get signature input names (what calibrate() uses)
+    sig_list = interp.get_signature_list()
+    print(f"  Signatures: {sig_list}")
+
+    if "serving_default" in sig_list:
+        sig_name = "serving_default"
+    else:
+        sig_name = list(sig_list.keys())[0]
+        print(f"  [INFO] Using signature '{sig_name}'")
+
+    sig_keys = list(sig_list[sig_name]["inputs"])
+    sig_input_name = sig_keys[0]
+
+    # Get shape from input details
+    input_details = interp.get_input_details()[0]
+    shape = input_details["shape"]
+
+    print(f"  Signature: '{sig_name}', input: '{sig_input_name}', shape={shape}")
+    return sig_name, sig_input_name, shape
 
 
 def quantize_to_int8(fp32_path, int8_path):
@@ -205,7 +204,7 @@ def quantize_to_int8(fp32_path, int8_path):
     # Collect calibration data
     cal_samples = collect_calibration_data()
     if cal_samples is not None:
-        input_name, input_shape = _get_tflite_input_details(fp32_path)
+        sig_name, input_name, input_shape = _get_tflite_input_details(fp32_path)
 
         # Reshape calibration data to match tflite input shape if needed
         # litert_torch may convert NCHW→NHWC during export
@@ -215,9 +214,9 @@ def quantize_to_int8(fp32_path, int8_path):
             print(f"  Reshaping calibration: {sample_shape} → {tflite_shape}")
             cal_samples = [np.transpose(s, (0, 2, 3, 1)) for s in cal_samples]
 
-        # calibrate() expects: {signature: list_of_input_dicts}
+        # calibrate() expects: {signature_name: list_of_input_dicts}
         calibration_data = {
-            "serving_default": [
+            sig_name: [
                 {input_name: sample} for sample in cal_samples
             ]
         }
