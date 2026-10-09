@@ -159,38 +159,20 @@ def collect_calibration_data():
 
 def quantize_to_int8(fp32_path, int8_path):
     """Quantize FP32 .tflite to INT8 using ai-edge-quantizer."""
-    from ai_edge_quantizer import quantizer, qtyping
+    from ai_edge_quantizer import quantizer, recipe
 
     print("[Step 2] Quantizing FP32 → INT8...")
 
     qt = quantizer.Quantizer(fp32_path)
 
-    # Full integer static quantization (SRQ):
-    # Both weights and activations quantized to INT8.
-    # execution_mode=SRQ is required when both tensors are quantized.
-    qt.update_quantization_recipe(
-        regex=".*",
-        operation_name=qtyping.TFLOperationName.ALL_SUPPORTED,
-        algorithm_key=quantizer.AlgorithmName.MIN_MAX_UNIFORM_QUANT,
-        op_config=quantizer._OpQuantizationConfig(
-            activation_tensor_config=quantizer._TensorQuantizationConfig(
-                num_bits=8,
-                symmetric=True,
-                granularity=qtyping.QuantGranularity.TENSORWISE,
-            ),
-            weight_tensor_config=quantizer._TensorQuantizationConfig(
-                num_bits=8,
-                symmetric=True,
-                granularity=qtyping.QuantGranularity.CHANNELWISE,
-            ),
-            execution_mode=qtyping.OpExecutionMode.SRQ,
-        ),
-    )
+    # Use built-in static INT8 recipe:
+    # Weights=INT8, Activations=INT8 (full integer SRQ)
+    qt.load_quantization_recipe(recipe.static_wi8_ai8())
 
-    # Collect and run calibration (required for SRQ)
+    # Collect and run calibration (required for static quantization)
     cal_data = collect_calibration_data()
     if cal_data is not None:
-        calibration_result = qt.calibrate(cal_data)
+        qt.calibrate(cal_data)
     else:
         print("  [WARN] No calibration data — quantization may be inaccurate")
 
