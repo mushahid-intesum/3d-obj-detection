@@ -54,7 +54,8 @@
 /* PWM config */
 #define MOTOR_PWM_FREQ_HZ  1000
 #define MOTOR_PWM_BITS     8         /* 8-bit resolution = 0-255  */
-#define MOTOR_SPEED        100       /* PWM duty 0-255            */
+#define LEFT_MOTOR_SPEED        50 
+#define RIGHT_MOTOR_SPEED        150
 
 /* Movement timing — TUNE THESE MANUALLY (no IMU) */
 #define FORWARD_MS      500          /* ms to move one grid cell  */

@@ -24,7 +24,8 @@
 /* PWM config */
 #define MOTOR_PWM_FREQ_HZ  1000
 #define MOTOR_PWM_BITS     8
-#define MOTOR_SPEED        100
+#define LEFT_MOTOR_SPEED       250
+#define RIGHT_MOTOR_SPEED        70
 
 /* Movement timing */
 #define FORWARD_MS      500

@@ -26,11 +26,12 @@ static const char *TAG = "motor";
 
 /* ── PWM channels ── */
 
-static void set_speed(uint32_t speed)
+static void set_speed(uint32_t lspeed, uint32_t rspeed)
 {
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, speed);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, rspeed);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, speed);
+
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, lspeed);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
 }
 
@@ -88,41 +89,41 @@ esp_err_t motor_init(void)
 
 void motor_stop(void)
 {
-    set_speed(0);
-}
-
-void motor_forward(uint32_t duration_ms)
-{
-    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  
-    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  
-    set_speed(MOTOR_SPEED);
-    vTaskDelay(pdMS_TO_TICKS(duration_ms));
-    motor_stop();
+    set_speed(0, 0);
 }
 
 void motor_reverse(uint32_t duration_ms)
 {
-    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);  
-    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);  
-    set_speed(MOTOR_SPEED);
+    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  
+    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  
+    set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
 }
 
-void motor_turn_right(uint32_t duration_ms)
+void motor_forward(uint32_t duration_ms)
 {
     gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);  
-    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  
-    set_speed(MOTOR_SPEED);
+    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);  
+    set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
 }
 
 void motor_turn_left(uint32_t duration_ms)
 {
+    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);  
+    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  
+    set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    motor_stop();
+}
+
+void motor_turn_right(uint32_t duration_ms)
+{
     gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  
     gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);  
-    set_speed(MOTOR_SPEED);
+    set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
 }
@@ -183,7 +184,7 @@ bool motor_turn_to_heading(float target_heading, float tolerance_deg,
             gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);
             gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);
         }
-        set_speed(MOTOR_SPEED);
+        set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
 
         vTaskDelay(pdMS_TO_TICKS(HEADING_POLL_MS));
         elapsed += HEADING_POLL_MS;

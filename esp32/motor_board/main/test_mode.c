@@ -323,6 +323,20 @@ static void handle_t6_motor(const char *raw_json)
     test_send_str(resp);
 }
 
+
+static void handle_t6_motor_2()
+{
+    motor_forward(500);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    motor_turn_right(200);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    motor_turn_left(200);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+
 /* ══════════════════════════════════════════════════════════════════════════
  *  Main test loop
  * ══════════════════════════════════════════════════════════════════════════ */
@@ -356,88 +370,90 @@ esp_err_t test_mode_run_motor(void)
      * an undefined state — you cannot retry on the same fd.
      */
     bool connected = false;
-    for (int i = 0; i < 15; i++) {
-        s_test_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (s_test_sock < 0) {
-            ESP_LOGE(TAG, "Socket creation failed: errno=%d", errno);
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            continue;
-        }
+    // for (int i = 0; i < 15; i++) {
+    //     s_test_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    //     if (s_test_sock < 0) {
+    //         ESP_LOGE(TAG, "Socket creation failed: errno=%d", errno);
+    //         vTaskDelay(pdMS_TO_TICKS(2000));
+    //         continue;
+    //     }
 
-        int ret = connect(s_test_sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
-        if (ret == 0) {
-            connected = true;
-            ESP_LOGI(TAG, "Connected to test server!");
-            break;
-        }
+    //     int ret = connect(s_test_sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    //     if (ret == 0) {
+    //         connected = true;
+    //         ESP_LOGI(TAG, "Connected to test server!");
+    //         break;
+    //     }
 
-        ESP_LOGW(TAG, "Connect attempt %d/15 failed: errno=%d (%s)",
-                 i + 1, errno,
-                 errno == 111 ? "ECONNREFUSED — server not running?" :
-                 errno == 113 ? "EHOSTUNREACH — wrong IP?" :
-                 errno == 110 ? "ETIMEDOUT — firewall?" : "unknown");
-        close(s_test_sock);
-        s_test_sock = -1;
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
+    //     ESP_LOGW(TAG, "Connect attempt %d/15 failed: errno=%d (%s)",
+    //              i + 1, errno,
+    //              errno == 111 ? "ECONNREFUSED — server not running?" :
+    //              errno == 113 ? "EHOSTUNREACH — wrong IP?" :
+    //              errno == 110 ? "ETIMEDOUT — firewall?" : "unknown");
+    //     close(s_test_sock);
+    //     s_test_sock = -1;
+    //     vTaskDelay(pdMS_TO_TICKS(2000));
+    // }
 
-    if (!connected) {
-        ESP_LOGE(TAG, "╔═══════════════════════════════════════╗");
-        ESP_LOGE(TAG, "║  FAILED to connect to test server!    ║");
-        ESP_LOGE(TAG, "║  Check:                               ║");
-        ESP_LOGE(TAG, "║  1. Is test_server.py running?        ║");
-        ESP_LOGE(TAG, "║  2. Is IP correct? (%s)     ", TEST_SERVER_IP);
-        ESP_LOGE(TAG, "║  3. Firewall open on port %d?      ", TEST_SERVER_PORT);
-        ESP_LOGE(TAG, "║  4. Same WiFi network?                ║");
-        ESP_LOGE(TAG, "╚═══════════════════════════════════════╝");
-        return ESP_FAIL;
-    }
+    // if (!connected) {
+    //     ESP_LOGE(TAG, "╔═══════════════════════════════════════╗");
+    //     ESP_LOGE(TAG, "║  FAILED to connect to test server!    ║");
+    //     ESP_LOGE(TAG, "║  Check:                               ║");
+    //     ESP_LOGE(TAG, "║  1. Is test_server.py running?        ║");
+    //     ESP_LOGE(TAG, "║  2. Is IP correct? (%s)     ", TEST_SERVER_IP);
+    //     ESP_LOGE(TAG, "║  3. Firewall open on port %d?      ", TEST_SERVER_PORT);
+    //     ESP_LOGE(TAG, "║  4. Same WiFi network?                ║");
+    //     ESP_LOGE(TAG, "╚═══════════════════════════════════════╝");
+    //     return ESP_FAIL;
+    // }
 
     /* ── Send HELLO ── */
     test_send_str("{\"board\":\"motor\",\"status\":\"hello\"}");
 
     /* ── Process test commands ── */
     while (1) {
-        char *raw = test_recv_str();
-        if (!raw) {
-            ESP_LOGW(TAG, "No more commands — disconnected or done");
-            break;
-        }
+        // char *raw = test_recv_str();
+        // if (!raw) {
+        //     ESP_LOGW(TAG, "No more commands — disconnected or done");
+        //     break;
+        // }
 
         /* Make a copy for handlers that need the full JSON
          * (json_get_cmd modifies the string in place) */
-        char raw_copy[512];
-        strncpy(raw_copy, raw, sizeof(raw_copy) - 1);
-        raw_copy[sizeof(raw_copy) - 1] = '\0';
+        // char raw_copy[512];
+        // strncpy(raw_copy, raw, sizeof(raw_copy) - 1);
+        // raw_copy[sizeof(raw_copy) - 1] = '\0';
 
-        char *cmd = json_get_cmd(raw);
-        if (!cmd) {
-            ESP_LOGW(TAG, "Invalid command JSON");
-            free(raw);
-            continue;
-        }
+        // char *cmd = json_get_cmd(raw);
+        // if (!cmd) {
+        //     ESP_LOGW(TAG, "Invalid command JSON");
+        //     free(raw);
+        //     continue;
+        // }
 
-        ESP_LOGI(TAG, "Command: %s", cmd);
+        // ESP_LOGI(TAG, "Command: %s", cmd);
 
-        if (strcmp(cmd, "t1_ok") == 0) {
-            handle_t1_ok();
-        } else if (strcmp(cmd, "t3_spi_recv") == 0) {
-            handle_t3_spi_recv();
-        } else if (strcmp(cmd, "t4_imu_read") == 0) {
-            handle_t4_imu_read();
-        } else if (strcmp(cmd, "t5_spi_respond") == 0) {
-            handle_t5_spi_respond();
-        } else if (strcmp(cmd, "t6_motor") == 0) {
-            handle_t6_motor(raw_copy);
-        } else if (strcmp(cmd, "done") == 0) {
-            ESP_LOGI(TAG, "Test suite complete!");
-            free(raw);
-            break;
-        } else {
-            ESP_LOGW(TAG, "Unknown command: %s", cmd);
-        }
+        // if (strcmp(cmd, "t1_ok") == 0) {
+        //     handle_t1_ok();
+        // } else if (strcmp(cmd, "t3_spi_recv") == 0) {
+        //     handle_t3_spi_recv();
+        // } else if (strcmp(cmd, "t4_imu_read") == 0) {
+        //     handle_t4_imu_read();
+        // } else if (strcmp(cmd, "t5_spi_respond") == 0) {
+        //     handle_t5_spi_respond();
+        // } else if (strcmp(cmd, "t6_motor") == 0) {
+        //     handle_t6_motor(raw_copy);
+        // } else if (strcmp(cmd, "done") == 0) {
+        //     ESP_LOGI(TAG, "Test suite complete!");
+        //     free(raw);
+        //     break;
+        // } else {
+        //     ESP_LOGW(TAG, "Unknown command: %s", cmd);
+        // }
 
-        free(raw);
+        // free(raw);
+
+        handle_t6_motor_2();
     }
 
     close(s_test_sock);
