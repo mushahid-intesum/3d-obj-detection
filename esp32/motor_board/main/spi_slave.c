@@ -47,9 +47,9 @@ esp_err_t spi_slave_init(void)
     /* Allocate DMA buffers in PSRAM */
     if (!s_rx_buf) {
         s_rx_buf = (uint8_t *)heap_caps_aligned_alloc(
-            4, SPI_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
+            4, SPI_BUF_SIZE, MALLOC_CAP_SPIRAM);
         s_tx_buf = (uint8_t *)heap_caps_aligned_alloc(
-            4, SPI_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
+            4, SPI_BUF_SIZE, MALLOC_CAP_SPIRAM);
         if (!s_rx_buf || !s_tx_buf) {
             ESP_LOGE(TAG, "Failed to alloc SPI buffers in PSRAM");
             return ESP_FAIL;

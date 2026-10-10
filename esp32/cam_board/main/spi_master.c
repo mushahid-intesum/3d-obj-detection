@@ -124,8 +124,8 @@ esp_err_t spi_exchange_nav_features(uint8_t obstacle,
     const int buf_size = 2 + ENCODER_FEAT_SIZE;
 
     if (!tx_buf) {
-        tx_buf = (uint8_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
-        rx_buf = (uint8_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
+        tx_buf = (uint8_t *)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+        rx_buf = (uint8_t *)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
         if (!tx_buf || !rx_buf) {
             ESP_LOGE(TAG, "Failed to alloc SPI nav buffers");
             return ESP_FAIL;
