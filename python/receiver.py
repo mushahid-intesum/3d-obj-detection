@@ -62,6 +62,109 @@ def recv_exact(sock, n):
     return bytes(buf)
 
 
+def connect_with_retry(ip, port, max_retries=10, timeout=30):
+    """Connect to ESP32 with retry + exponential backoff."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((ip, port))
+            print(f"  Connected to {ip}:{port}")
+            return sock
+        except (socket.timeout, ConnectionRefusedError, OSError) as e:
+            wait = min(2 ** attempt, 30)
+            print(f"  [Retry {attempt}/{max_retries}] {e} — waiting {wait}s...")
+            try:
+                sock.close()
+            except Exception:
+                pass
+            time.sleep(wait)
+
+    raise ConnectionError(f"Failed to connect after {max_retries} attempts")
+
+
+def receive_loop(sock, img_dir, traj_file, start_frame=0):
+    """
+    Receive frames until disconnect or Ctrl-C.
+
+    Returns (frame_count, override_count) so the caller can resume.
+    """
+    frame_count = start_frame
+    override_count = 0
+
+    while True:
+        # ── Receive IMG4 header (22 bytes) ──
+        header = recv_exact(sock, HEADER_SIZE)
+        (magic, frame_id, timestep, action_taken,
+         depth_blocked, heading_deg, jpeg_len) = \
+            struct.unpack("<IIIBBfI", header)
+
+        if magic != MAGIC:
+            print(f"  [WARN] Bad magic 0x{magic:08X}, resync...")
+            continue
+
+        # ── Receive JPEG data ──
+        jpeg_data = recv_exact(sock, jpeg_len)
+
+        # ── Decode & resize to 48×48 ──
+        img = Image.open(BytesIO(jpeg_data)).convert("RGB")
+        img_resized = img.resize((IMG_SIZE, IMG_SIZE), Image.LANCZOS)
+
+        # ── Save image ──
+        filename = f"frame_{frame_count:06d}.jpg"
+        filepath = os.path.join(img_dir, filename)
+        img_resized.save(filepath, quality=95)
+
+        # ── Write trajectory line ──
+        entry = {
+            "t": frame_count,
+            "frame": filename,
+            "action": int(action_taken),
+            "heading": round(float(heading_deg), 2),
+            "blocked": bool(depth_blocked),
+            "ts": round(time.time(), 3),
+        }
+        traj_file.write(json.dumps(entry) + "\n")
+        traj_file.flush()
+
+        # Track overrides
+        if depth_blocked:
+            override_count += 1
+
+        frame_count += 1
+
+        # ── Console output (every 10 frames) ──
+        if frame_count % 10 == 0:
+            action_str = ACTION_NAMES[action_taken] if action_taken < 4 else "?"
+            print(f"  [{frame_count:>6}] "
+                  f"act={action_str:<5} "
+                  f"hdg={heading_deg:6.1f}° "
+                  f"blk={depth_blocked} "
+                  f"({override_count} overrides)")
+
+        # ── Live preview ──
+        if HAS_CV2 and SHOW_PREVIEW:
+            arr = np.array(img_resized)
+            display = cv2.resize(arr, (384, 384),
+                                 interpolation=cv2.INTER_NEAREST)
+            display = cv2.cvtColor(display, cv2.COLOR_RGB2BGR)
+
+            action_str = ACTION_NAMES[action_taken] if action_taken < 4 else "?"
+            label = (f"Step:{frame_count} Act:{action_str} "
+                     f"Hdg:{heading_deg:.0f}")
+            color = (0, 0, 255) if depth_blocked else (0, 255, 0)
+            cv2.putText(display, label, (8, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            if depth_blocked:
+                cv2.putText(display, "BLOCKED", (8, 370),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.imshow("Exploration", display)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+
+    return frame_count, override_count
+
+
 def main():
     # Generate session name if not set
     session_name = SESSION_NAME
@@ -76,100 +179,48 @@ def main():
 
     print(f"Session: {session_name}")
     print(f"Output:  {out_dir}")
-    print(f"Connecting to {ESP32_IP}:{ESP32_PORT}...")
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(15)
-    sock.connect((ESP32_IP, ESP32_PORT))
-    print("Connected!\n")
 
     frame_count = 0
     override_count = 0
     t_start = time.time()
 
-    # Open trajectory file for streaming writes
-    traj_file = open(traj_path, "w")
+    # Open trajectory file for streaming writes (append mode for reconnects)
+    traj_file = open(traj_path, "a")
 
     try:
         while True:
-            # ── Receive IMG4 header (22 bytes) ──
-            header = recv_exact(sock, HEADER_SIZE)
-            (magic, frame_id, timestep, action_taken,
-             depth_blocked, heading_deg, jpeg_len) = \
-                struct.unpack("<IIIBBfI", header)
+            # ── Connect (with retry) ──
+            print(f"\nConnecting to {ESP32_IP}:{ESP32_PORT}...")
+            try:
+                sock = connect_with_retry(ESP32_IP, ESP32_PORT)
+            except ConnectionError as e:
+                print(f"  {e}")
+                break
 
-            if magic != MAGIC:
-                print(f"  [WARN] Bad magic 0x{magic:08X}, resync...")
-                continue
+            # ── Receive until disconnect ──
+            try:
+                fc, oc = receive_loop(sock, img_dir, traj_file,
+                                      start_frame=frame_count)
+                frame_count = fc
+                override_count += oc
+                break  # clean exit (user pressed 'q')
 
-            # ── Receive JPEG data ──
-            jpeg_data = recv_exact(sock, jpeg_len)
-
-            # ── Decode & resize to 48×48 ──
-            img = Image.open(BytesIO(jpeg_data)).convert("RGB")
-            img_resized = img.resize((IMG_SIZE, IMG_SIZE), Image.LANCZOS)
-
-            # ── Save image ──
-            filename = f"frame_{frame_count:06d}.jpg"
-            filepath = os.path.join(img_dir, filename)
-            img_resized.save(filepath, quality=95)
-
-            # ── Write trajectory line ──
-            entry = {
-                "t": frame_count,
-                "frame": filename,
-                "action": int(action_taken),
-                "heading": round(float(heading_deg), 2),
-                "blocked": bool(depth_blocked),
-                "ts": round(time.time(), 3),
-            }
-            traj_file.write(json.dumps(entry) + "\n")
-            traj_file.flush()
-
-            # Track overrides
-            if depth_blocked:
-                override_count += 1
-
-            frame_count += 1
-
-            # ── Console output (every 10 frames) ──
-            if frame_count % 10 == 0:
-                elapsed = time.time() - t_start
-                fps = frame_count / elapsed if elapsed > 0 else 0
-                action_str = ACTION_NAMES[action_taken] if action_taken < 4 else "?"
-                print(f"  [{frame_count:>6}] "
-                      f"act={action_str:<5} "
-                      f"hdg={heading_deg:6.1f}° "
-                      f"blk={depth_blocked} "
-                      f"({fps:.1f} fps, {override_count} overrides)")
-
-            # ── Live preview ──
-            if HAS_CV2 and SHOW_PREVIEW:
-                arr = np.array(img_resized)
-                display = cv2.resize(arr, (384, 384),
-                                     interpolation=cv2.INTER_NEAREST)
-                display = cv2.cvtColor(display, cv2.COLOR_RGB2BGR)
-
-                action_str = ACTION_NAMES[action_taken] if action_taken < 4 else "?"
-                label = (f"Step:{frame_count} Act:{action_str} "
-                         f"Hdg:{heading_deg:.0f}")
-                color = (0, 0, 255) if depth_blocked else (0, 255, 0)
-                cv2.putText(display, label, (8, 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-                if depth_blocked:
-                    cv2.putText(display, "BLOCKED", (8, 370),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                cv2.imshow("Exploration", display)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+            except (ConnectionError, socket.timeout) as e:
+                print(f"\n  Connection lost: {e}")
+                print(f"  Frames so far: {frame_count}")
+                print(f"  Reconnecting in 3s...")
+                time.sleep(3)
+                # Loop back to reconnect
+            finally:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
 
     except KeyboardInterrupt:
         print("\n\nStopped by user.")
-    except ConnectionError as e:
-        print(f"\nConnection lost: {e}")
     finally:
         traj_file.close()
-        sock.close()
         if HAS_CV2 and SHOW_PREVIEW:
             cv2.destroyAllWindows()
 
@@ -199,3 +250,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
