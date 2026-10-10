@@ -69,7 +69,12 @@ def connect_with_retry(ip, port, max_retries=10, timeout=30):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect((ip, port))
-            print(f"  Connected to {ip}:{port}")
+
+            # TCP tuning for reliability
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+            print(f"  Connected to {ip}:{port} (timeout={timeout}s, nodelay, keepalive)")
             return sock
         except (socket.timeout, ConnectionRefusedError, OSError) as e:
             wait = min(2 ** attempt, 30)

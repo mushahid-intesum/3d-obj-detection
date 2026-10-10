@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <errno.h>
 
 static const char *TAG = "wifi_stream";
@@ -87,7 +88,12 @@ esp_err_t wifi_init_sta(void)
         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
         pdMS_TO_TICKS(30000));
 
-    if (bits & WIFI_CONNECTED_BIT) return ESP_OK;
+    if (bits & WIFI_CONNECTED_BIT) {
+        /* Disable power saving — keep radio awake for stable streaming */
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        ESP_LOGI(TAG, "WiFi power save disabled for streaming");
+        return ESP_OK;
+    }
     ESP_LOGE(TAG, "WiFi connection failed");
     return ESP_FAIL;
 }
@@ -146,8 +152,26 @@ static void stream_accept_task(void *pvParam)
             continue;
         }
 
+        /* Configure socket for reliability */
+        /* Send timeout — prevents send() from blocking forever */
+        struct timeval snd_tv = { .tv_sec = 5, .tv_usec = 0 };
+        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &snd_tv, sizeof(snd_tv));
+
+        /* TCP_NODELAY — disable Nagle, send packets immediately */
+        int flag = 1;
+        setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+        /* TCP keepalive — detect dead connections in ~25s */
+        setsockopt(client, SOL_SOCKET, SO_KEEPALIVE, &flag, sizeof(flag));
+        int idle = 10;   /* start probes after 10s idle */
+        int intvl = 5;   /* probe every 5s */
+        int cnt = 3;     /* 3 failed probes = dead */
+        setsockopt(client, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+        setsockopt(client, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+        setsockopt(client, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+
         s_client_sock = client;
-        ESP_LOGI(TAG, "Client connected!");
+        ESP_LOGI(TAG, "Client connected! (snd_timeout=5s, keepalive=10/5/3)");
 
         /* Wait until client disconnects (s_client_sock set to -1 by send_all) */
         while (s_client_sock >= 0) {
