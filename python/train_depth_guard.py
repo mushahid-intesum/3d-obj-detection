@@ -33,7 +33,9 @@ OBSTACLE_THRESHOLD = 0.65         # DA-V2 disparity > this → blocked
 BALANCE_WEIGHT     = True
 
 # Model — 4-stage hierarchical encoder (mini Depth Anything)
-STAGE_CHANNELS     = [16, 24, 48, 96]
+STAGE_CHANNELS     = [64, 128, 320, 640]   # per-stage widths
+STAGE_BLOCKS       = [2, 3, 3, 2]          # DSConv blocks per stage
+HEAD_DIM           = 128                   # MLP head hidden dim
 
 # Training
 LR                 = 3e-4
@@ -50,8 +52,9 @@ SEED               = 42
 #  Miniature Depth Anything V2 — 4-stage hierarchical encoder
 #  mirroring DA-V2's DINOv2 backbone + DPT head structure.
 #
-#  Stage channels: [16, 24, 48, 96] at resolutions [24², 12², 6², 3²]
-#  ~25K params → ~25KB INT8 for ESP32-S3
+#  Stage channels: [64, 128, 320, 640]
+#  Stage blocks:   [2, 3, 3, 2]
+#  ~1M params → ~1MB INT8 for ESP32-S3 (PSRAM)
 # ═══════════════════════════════════════════════
 
 class DepthwiseSeparableConv(nn.Module):
@@ -75,12 +78,13 @@ class DepthwiseSeparableConv(nn.Module):
 
 class MicroDepthAnything(nn.Module):
     """
-    Miniature Depth Anything V2 student model (~25K params).
+    Miniature Depth Anything V2 student model (~1M params).
 
     Mirrors DA-V2's hierarchical design:
       - Stem: patch embedding (3→C0) like DINOv2's patch projection
-      - Stage 1–3: paired depthwise-separable blocks at decreasing
-        resolutions, analogous to DINOv2's multi-scale features
+      - Stage 1–3: variable-depth depthwise-separable blocks at
+        decreasing resolutions, analogous to DINOv2's multi-scale
+        transformer blocks
       - Head: global pool → 2-layer MLP classifier
 
     Input:  (B, 3, 48, 48)  RGB image
@@ -89,11 +93,16 @@ class MicroDepthAnything(nn.Module):
     48×48 → stem[24²] → S1[12²] → S2[6²] → S3[3²] → GAP → MLP → 1
     """
 
-    def __init__(self, channels=None):
+    def __init__(self, channels=None, blocks=None, head_dim=None):
         super().__init__()
         if channels is None:
             channels = STAGE_CHANNELS
+        if blocks is None:
+            blocks = STAGE_BLOCKS
+        if head_dim is None:
+            head_dim = HEAD_DIM
         c0, c1, c2, c3 = channels
+        b0, b1, b2, b3 = blocks
 
         # Stem — patch embedding (like DINOv2 patch projection)
         # 48×48 → 24×24
@@ -103,32 +112,27 @@ class MicroDepthAnything(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # Stage 1 — 24×24 → 12×12
-        self.stage1 = nn.Sequential(
-            DepthwiseSeparableConv(c0, c1, stride=2),
-            DepthwiseSeparableConv(c1, c1, stride=1),
-        )
-
-        # Stage 2 — 12×12 → 6×6
-        self.stage2 = nn.Sequential(
-            DepthwiseSeparableConv(c1, c2, stride=2),
-            DepthwiseSeparableConv(c2, c2, stride=1),
-        )
-
-        # Stage 3 — 6×6 → 3×3
-        self.stage3 = nn.Sequential(
-            DepthwiseSeparableConv(c2, c3, stride=2),
-            DepthwiseSeparableConv(c3, c3, stride=1),
-        )
+        # Hierarchical stages — each halves spatial resolution
+        self.stage1 = self._make_stage(c0, c1, b1)    # 24→12
+        self.stage2 = self._make_stage(c1, c2, b2)    # 12→6
+        self.stage3 = self._make_stage(c2, c3, b3)    # 6→3
 
         # Classification head — DPT-style projection + classifier
         self.head = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(c3, 32),
+            nn.Linear(c3, head_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(32, 1),
+            nn.Linear(head_dim, 1),
         )
+
+    @staticmethod
+    def _make_stage(in_ch, out_ch, n_blocks):
+        """Build a stage: first block strides, rest preserve resolution."""
+        layers = [DepthwiseSeparableConv(in_ch, out_ch, stride=2)]
+        for _ in range(n_blocks - 1):
+            layers.append(DepthwiseSeparableConv(out_ch, out_ch, stride=1))
+        return nn.Sequential(*layers)
 
     def forward(self, x):
         x = self.stem(x)
@@ -309,158 +313,6 @@ def eval_epoch(model, loader, criterion, device):
 
     return total_loss / max(total, 1), acc, precision, recall, f1
 
-
-<<<<<<< HEAD
-=======
-# ═══════════════════════════════════════════════
-#  LiteRT INT8 Export (via ai_edge_torch)
-# ═══════════════════════════════════════════════
-
-def export_tflite_int8(model, output_path, calibration_loader, device,
-                       n_cal=200):
-    """
-    Export PyTorch model to INT8 LiteRT (.tflite) via ai_edge_torch.
-
-    Direct path: PyTorch → ai_edge_torch.convert() → .tflite
-    With PT2E quantization for full INT8.
-
-    Requires: pip install ai-edge-torch
-    """
-    model.eval().cpu()
-    sample_input = (torch.randn(1, 3, IMG_SIZE, IMG_SIZE),)
-
-    # Collect calibration data
-    cal_data = []
-    for imgs, _ in calibration_loader:
-        for img in imgs:
-            cal_data.append(img.unsqueeze(0))
-            if len(cal_data) >= n_cal:
-                break
-        if len(cal_data) >= n_cal:
-            break
-    print(f"[Export] Calibration samples: {len(cal_data)}")
-
-    try:
-        model = model.eval().cpu()
-        sample_args = (sample_input,)  # convert() expects a tuple of args
-    
-        # Step 1: convert to an unquantized float .tflite
-        float_path = os.path.splitext(output_path)[0] + "_float.tflite"
-        litert_torch.convert(model, sample_args).export(float_path)
-    
-        # Read the signature key, input name and input shape from the converted model
-        interp = Interpreter(model_path=float_path)
-        signatures = interp.get_signature_list()
-        sig_key = "serving_default" if "serving_default" in signatures else next(iter(signatures))
-        input_name = signatures[sig_key]["inputs"][0]  # single input model assumed
-        input_shape = tuple(interp.get_input_details()[0]["shape"])
-    
-        # Step 2: static INT8 recipe
-        qt = quantizer.Quantizer(float_path)
-        qt.load_quantization_recipe(recipe.static_wi8_ai8())
-    
-        if float_io:
-            # Leave the model's input and output tensors in float32
-            for op_name in (qtyping.TFLOperationName.INPUT, qtyping.TFLOperationName.OUTPUT):
-                qt.update_quantization_recipe(
-                    regex=".*",
-                    operation_name=op_name,
-                    algorithm_key=algorithm_manager.AlgorithmName.NO_QUANTIZE,
-                )
-    
-        # Step 3: calibrate with real data, as numpy float32 matching the .tflite input shape
-        samples = []
-        for x in cal_data:
-            arr = x.detach().cpu().numpy().astype(np.float32)
-            if tuple(arr.shape) != input_shape:
-                raise ValueError(
-                    f"Calibration sample shape {tuple(arr.shape)} does not match "
-                    f"the .tflite input shape {input_shape}"
-                )
-            samples.append({input_name: arr})
-    
-        calibration_result = qt.calibrate(
-            {sig_key: samples},
-            mode=calibrator.CalibrationMode.CALIBRATION_PROFILER_BASED,
-        )
-    
-        # Step 4: quantize and save
-        if os.path.exists(output_path):
-            os.remove(output_path)
-        qt.quantize(calibration_result=calibration_result).export_model(output_path)
-    
-        size_kb = os.path.getsize(output_path) / 1024
-        print(f"[Export] LiteRT INT8 saved: {output_path} ({size_kb:.1f} KB)")
-        return output_path
-    except ImportError as e:
-        print("[Export] ai_edge_torch not installed.")
-        print("  Install: pip install ai-edge-torch")
-
-        print(e)
-
-        # Fallback: save FP32 .pt for manual conversion
-        fallback_path = output_path.replace(".tflite", ".pt")
-        torch.save(model.state_dict(), fallback_path)
-        print(f"[Export] Saved FP32 weights: {fallback_path}")
-        print(f"  Convert manually with ai_edge_torch later.")
-        return fallback_path
-
-    except Exception as e:
-        print(f"[Export] PT2E quantization failed: {e}")
-        print("[Export] Falling back to FP32 LiteRT export...")
-
-        try:
-            import litert_torch
-            edge_model = litert_torch.convert(model, sample_input)
-            fp32_path = output_path.replace(".tflite", "_fp32.tflite")
-            edge_model.export(fp32_path)
-
-            size_kb = os.path.getsize(fp32_path) / 1024
-            print(f"[Export] FP32 LiteRT saved: {fp32_path} ({size_kb:.1f} KB)")
-            print("  Quantize with: ai-edge-quantizer")
-            return fp32_path
-
-        except Exception as e2:
-            print(f"[Export] FP32 export also failed: {e2}")
-            fallback_path = output_path.replace(".tflite", ".pt")
-            torch.save(model.state_dict(), fallback_path)
-            return fallback_path
-
-
-def export_c_header(tflite_path, header_path):
-    """Convert .tflite to C byte array for ESP32 firmware embedding."""
-    with open(tflite_path, "rb") as f:
-        data = f.read()
-
-    with open(header_path, "w") as f:
-        f.write("/**\n")
-        f.write(" * @file depth_guard_model.h\n")
-        f.write(" * @brief INT8 TFLite model — depth guard obstacle detector.\n")
-        f.write(" *\n")
-        f.write(" * Distilled from Depth Anything V2 Small.\n")
-        f.write(" * Trained on NYU Depth V2 (47K indoor images).\n")
-        f.write(f" * Size: {len(data)} bytes ({len(data) / 1024:.1f} KB)\n")
-        f.write(f" * Input:  1×48×48×3 INT8 image\n")
-        f.write(f" * Output: 1 INT8 obstacle logit\n")
-        f.write(" */\n")
-        f.write("#ifndef DEPTH_GUARD_MODEL_H\n")
-        f.write("#define DEPTH_GUARD_MODEL_H\n\n")
-        f.write("#include <stddef.h>\n\n")
-        f.write(f"#define DEPTH_GUARD_MODEL_LEN {len(data)}\n\n")
-        f.write("alignas(16) static const unsigned char\n")
-        f.write("depth_guard_model_data[] = {\n")
-
-        for i in range(0, len(data), 16):
-            chunk = data[i:i + 16]
-            hex_str = ", ".join(f"0x{b:02x}" for b in chunk)
-            f.write(f"    {hex_str},\n")
-
-        f.write("};\n\n")
-        f.write("#endif /* DEPTH_GUARD_MODEL_H */\n")
-
-    print(f"[Export] C header saved: {header_path}")
-
-
 # ═══════════════════════════════════════════════
 #  Main
 # ═══════════════════════════════════════════════
@@ -548,66 +400,33 @@ def main():
     print(f"\n[Train] {EPOCHS} epochs, batch={BATCH_SIZE}, "
           f"train={train_size}, val={val_size}\n")
 
-    # for epoch in range(1, EPOCHS + 1):
-    #     t0 = time.time()
-    #     train_loss, train_acc = train_epoch(
-    #         model, train_loader, optimizer, criterion, device
-    #     )
-    #     val_loss, val_acc, prec, rec, f1 = eval_epoch(
-    #         model, val_loader, criterion, device
-    #     )
-    #     scheduler.step()
-    #     dt = time.time() - t0
+    for epoch in range(1, EPOCHS + 1):
+        t0 = time.time()
+        train_loss, train_acc = train_epoch(
+            model, train_loader, optimizer, criterion, device
+        )
+        val_loss, val_acc, prec, rec, f1 = eval_epoch(
+            model, val_loader, criterion, device
+        )
+        scheduler.step()
+        dt = time.time() - t0
 
-    #     print(f"E{epoch:>3}/{EPOCHS} │ "
-    #           f"TrL={train_loss:.4f} TrA={train_acc:.3f} │ "
-    #           f"VlL={val_loss:.4f} VlA={val_acc:.3f} │ "
-    #           f"P={prec:.3f} R={rec:.3f} F1={f1:.3f} │ "
-    #           f"{dt:.1f}s")
+        print(f"E{epoch:>3}/{EPOCHS} │ "
+              f"TrL={train_loss:.4f} TrA={train_acc:.3f} │ "
+              f"VlL={val_loss:.4f} VlA={val_acc:.3f} │ "
+              f"P={prec:.3f} R={rec:.3f} F1={f1:.3f} │ "
+              f"{dt:.1f}s")
 
-    #     if f1 > best_f1:
-    #         best_f1 = f1
-    #         ckpt_path = os.path.join(OUTPUT_DIR, "best.pt")
-    #         torch.save(model.state_dict(), ckpt_path)
-    #         print(f"    ↳ New best F1={f1:.3f}, saved!")
->>>>>>> 5e663bb (some changes)
+        if f1 > best_f1:
+            best_f1 = f1
+            ckpt_path = os.path.join(OUTPUT_DIR, "best.pt")
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"    ↳ New best F1={f1:.3f}, saved!")
 
-    # # Final save
-    # torch.save(model.state_dict(),
-    #            os.path.join(OUTPUT_DIR, "final.pt"))
+    # Final save
+    torch.save(model.state_dict(),
+               os.path.join(OUTPUT_DIR, "final.pt"))
 
-<<<<<<< HEAD
-=======
-    # Load best for export
-    model.load_state_dict(
-        torch.load(os.path.join(OUTPUT_DIR, "best.pt"),
-                   map_location="cpu", weights_only=True)
-    )
-
-    # Export TFLite INT8
-    print(f"\n{'─' * 60}")
-    print(f"  Exporting to TFLite INT8...")
-    print(f"{'─' * 60}")
-
-    model.eval()
-
-    tflite_path = os.path.join(OUTPUT_DIR, "depth_guard.tflite")
-    result_path = export_tflite_int8(
-        model, tflite_path, train_loader, device
-    )
-
-    # Export C header if TFLite was created
-    if result_path.endswith(".tflite") and os.path.exists(result_path):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        header_path = os.path.join(MODEL_DIR, "depth_guard_model.h")
-        export_c_header(result_path, header_path)
-
-        import shutil
-        shutil.copy2(result_path,
-                     os.path.join(MODEL_DIR, "depth_guard.tflite"))
-        print(f"[Export] Model copied to {MODEL_DIR}")
-
->>>>>>> 5e663bb (some changes)
     print(f"\n{'═' * 60}")
     print(f"  Training complete!")
     print(f"  Best F1:   {best_f1:.3f}")

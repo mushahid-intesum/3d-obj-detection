@@ -43,7 +43,9 @@ N_CALIBRATION      = 200         # Number of calibration samples for INT8
 
 # Model architecture (must match train_depth_guard.py)
 IMG_SIZE           = 48
-STAGE_CHANNELS     = [16, 24, 48, 96]
+STAGE_CHANNELS     = [64, 128, 320, 640]
+STAGE_BLOCKS       = [2, 3, 3, 2]
+HEAD_DIM           = 128
 # ═══════════════════════════════════════════════
 
 
@@ -72,36 +74,39 @@ class DepthwiseSeparableConv(nn.Module):
 
 
 class MicroDepthAnything(nn.Module):
-    def __init__(self, channels=None):
+    def __init__(self, channels=None, blocks=None, head_dim=None):
         super().__init__()
         if channels is None:
             channels = STAGE_CHANNELS
+        if blocks is None:
+            blocks = STAGE_BLOCKS
+        if head_dim is None:
+            head_dim = HEAD_DIM
         c0, c1, c2, c3 = channels
+        b0, b1, b2, b3 = blocks
 
         self.stem = nn.Sequential(
             nn.Conv2d(3, c0, 3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(c0),
             nn.ReLU(inplace=True),
         )
-        self.stage1 = nn.Sequential(
-            DepthwiseSeparableConv(c0, c1, stride=2),
-            DepthwiseSeparableConv(c1, c1, stride=1),
-        )
-        self.stage2 = nn.Sequential(
-            DepthwiseSeparableConv(c1, c2, stride=2),
-            DepthwiseSeparableConv(c2, c2, stride=1),
-        )
-        self.stage3 = nn.Sequential(
-            DepthwiseSeparableConv(c2, c3, stride=2),
-            DepthwiseSeparableConv(c3, c3, stride=1),
-        )
+        self.stage1 = self._make_stage(c0, c1, b1)
+        self.stage2 = self._make_stage(c1, c2, b2)
+        self.stage3 = self._make_stage(c2, c3, b3)
         self.head = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(c3, 32),
+            nn.Linear(c3, head_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(32, 1),
+            nn.Linear(head_dim, 1),
         )
+
+    @staticmethod
+    def _make_stage(in_ch, out_ch, n_blocks):
+        layers = [DepthwiseSeparableConv(in_ch, out_ch, stride=2)]
+        for _ in range(n_blocks - 1):
+            layers.append(DepthwiseSeparableConv(out_ch, out_ch, stride=1))
+        return nn.Sequential(*layers)
 
     def forward(self, x):
         x = self.stem(x)
