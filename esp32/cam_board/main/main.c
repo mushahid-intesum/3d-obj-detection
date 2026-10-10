@@ -24,6 +24,7 @@
 
 #include "inference.h"
 #include "image_proc.h"
+#include "esp_attr.h"
 
 #if defined(TEST_MODE) && TEST_MODE
 #include "test_mode.h"
@@ -67,7 +68,7 @@ static void collection_task(void *pvParam)
         /* 2. Depth guard — run obstacle detector on downsampled frame */
         uint8_t obstacle_flag = 0;
         {
-            static uint8_t dg_img[IMG_TARGET_SIZE];
+            static uint8_t dg_img[IMG_TARGET_SIZE] EXT_RAM_BSS_ATTR;
             image_downsample(fb->buf, fb->width, fb->height, dg_img);
 
             bool blocked = false;
@@ -114,8 +115,8 @@ static void collection_task(void *pvParam)
  *  Navigation Mode — encoder + SPI features
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/** Frame buffer for downscaled 128x128 image. */
-static uint8_t s_img_buf[IMG_TARGET_SIZE];
+/** Frame buffer for downscaled 128x128 image — in PSRAM. */
+static uint8_t s_img_buf[IMG_TARGET_SIZE] EXT_RAM_BSS_ATTR;
 
 static void navigation_task(void *pvParam)
 {
@@ -136,7 +137,7 @@ static void navigation_task(void *pvParam)
         image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
 
         /* 3. Run encoder: 128x128 RGB → 8×8×1024 features */
-        int8_t features[ENCODER_FEAT_SIZE];
+        static int8_t features[ENCODER_FEAT_SIZE] EXT_RAM_BSS_ATTR;
         esp_err_t enc_ret = inference_run_encoder(s_img_buf, features);
         if (enc_ret != ESP_OK) {
             ESP_LOGE(TAG, "Encoder failed");

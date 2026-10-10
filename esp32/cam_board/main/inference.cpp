@@ -16,6 +16,7 @@
  */
 #include "inference.h"
 #include "esp_log.h"
+#include "esp_attr.h"
 
 #include <string.h>
 
@@ -41,7 +42,8 @@ static const char *TAG = "inference";
 #include "tensorflow/lite/schema/schema_generated.h"
 
 static uint8_t s_dg_arena[DEPTH_GUARD_ARENA_SIZE]
-    __attribute__((aligned(16)));
+    __attribute__((aligned(16)))
+    EXT_RAM_BSS_ATTR;  /* Place in PSRAM — too large for internal DRAM */
 static tflite::MicroInterpreter *s_dg_interpreter = nullptr;
 static TfLiteTensor *s_dg_input = nullptr;
 static TfLiteTensor *s_dg_output = nullptr;
