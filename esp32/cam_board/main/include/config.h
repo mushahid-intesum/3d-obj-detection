@@ -49,7 +49,7 @@
  *  Exploration / Streaming
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define STREAM_DEFAULT_PORT  8888
-#define EXPLORE_CYCLE_MS     500     /* ~2 Hz action cycle */
+#define EXPLORE_CYCLE_MS     1500    /* post-action delay before next capture */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Action Space (shared with Motor Board)

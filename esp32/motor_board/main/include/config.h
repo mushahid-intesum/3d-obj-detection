@@ -59,7 +59,7 @@
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Exploration Parameters
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define EXPLORE_CYCLE_MS     500     /* ~2 Hz action cycle */
+#define EXPLORE_CYCLE_MS     1500    /* post-action delay before next capture */
 #define EXPLORE_SEQ_LENGTH   2048    /* pre-generated pink noise sequence */
 
 /* ═══════════════════════════════════════════════════════════════════════════
