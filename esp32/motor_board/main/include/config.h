@@ -24,7 +24,7 @@
 /* PWM config */
 #define MOTOR_PWM_FREQ_HZ  1000
 #define MOTOR_PWM_BITS     8
-#define LEFT_MOTOR_SPEED       150
+#define LEFT_MOTOR_SPEED       120
 #define RIGHT_MOTOR_SPEED        70
 
 /* Movement timing — step-and-stop bursts */
