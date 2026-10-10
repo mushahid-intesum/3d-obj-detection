@@ -16,7 +16,7 @@
  */
 #include "inference.h"
 #include "esp_log.h"
-#include "esp_attr.h"
+#include "esp_heap_caps.h"
 
 #include <string.h>
 
@@ -41,9 +41,7 @@ static const char *TAG = "inference";
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
-static uint8_t s_dg_arena[DEPTH_GUARD_ARENA_SIZE]
-    __attribute__((aligned(16)))
-    EXT_RAM_BSS_ATTR;  /* Place in PSRAM — too large for internal DRAM */
+static uint8_t *s_dg_arena = nullptr;  /* Allocated in PSRAM */
 static tflite::MicroInterpreter *s_dg_interpreter = nullptr;
 static TfLiteTensor *s_dg_input = nullptr;
 static TfLiteTensor *s_dg_output = nullptr;
@@ -53,6 +51,16 @@ esp_err_t depth_guard_init(void)
 {
     ESP_LOGI(TAG, "Loading depth guard model (%d bytes)...",
              DEPTH_GUARD_MODEL_LEN);
+
+    /* Allocate arena in PSRAM */
+    if (!s_dg_arena) {
+        s_dg_arena = (uint8_t *)heap_caps_aligned_alloc(
+            16, DEPTH_GUARD_ARENA_SIZE, MALLOC_CAP_SPIRAM);
+        if (!s_dg_arena) {
+            ESP_LOGE(TAG, "Failed to allocate DG arena in PSRAM!");
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     const tflite::Model *model =
         tflite::GetModel(depth_guard_model_data);

@@ -24,7 +24,7 @@
 
 #include "inference.h"
 #include "image_proc.h"
-#include "esp_attr.h"
+#include "esp_heap_caps.h"
 
 #if defined(TEST_MODE) && TEST_MODE
 #include "test_mode.h"
@@ -68,7 +68,11 @@ static void collection_task(void *pvParam)
         /* 2. Depth guard — run obstacle detector on downsampled frame */
         uint8_t obstacle_flag = 0;
         {
-            static uint8_t dg_img[IMG_TARGET_SIZE] EXT_RAM_BSS_ATTR;
+            static uint8_t *dg_img = NULL;
+            if (!dg_img) {
+                dg_img = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
+                assert(dg_img && "Failed to alloc dg_img in PSRAM");
+            }
             image_downsample(fb->buf, fb->width, fb->height, dg_img);
 
             bool blocked = false;
@@ -115,8 +119,8 @@ static void collection_task(void *pvParam)
  *  Navigation Mode — encoder + SPI features
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/** Frame buffer for downscaled 128x128 image — in PSRAM. */
-static uint8_t s_img_buf[IMG_TARGET_SIZE] EXT_RAM_BSS_ATTR;
+/** Frame buffer for downscaled 128x128 image — allocated in PSRAM. */
+static uint8_t *s_img_buf = NULL;
 
 static void navigation_task(void *pvParam)
 {
@@ -124,6 +128,12 @@ static void navigation_task(void *pvParam)
     int nav_steps = 0;
 
     ESP_LOGI(TAG, "Navigation loop started");
+
+    /* Allocate image buffer in PSRAM */
+    if (!s_img_buf) {
+        s_img_buf = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
+        assert(s_img_buf && "Failed to alloc s_img_buf in PSRAM");
+    }
 
     while (1) {
         /* 1. Capture frame */
@@ -137,7 +147,11 @@ static void navigation_task(void *pvParam)
         image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
 
         /* 3. Run encoder: 128x128 RGB → 8×8×1024 features */
-        static int8_t features[ENCODER_FEAT_SIZE] EXT_RAM_BSS_ATTR;
+        static int8_t *features = NULL;
+        if (!features) {
+            features = (int8_t *)heap_caps_malloc(ENCODER_FEAT_SIZE, MALLOC_CAP_SPIRAM);
+            assert(features && "Failed to alloc features in PSRAM");
+        }
         esp_err_t enc_ret = inference_run_encoder(s_img_buf, features);
         if (enc_ret != ESP_OK) {
             ESP_LOGE(TAG, "Encoder failed");
