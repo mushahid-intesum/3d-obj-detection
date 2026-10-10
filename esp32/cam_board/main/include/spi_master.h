@@ -10,6 +10,7 @@
 #define SPI_MASTER_H
 
 #include "esp_err.h"
+#include "inference.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -30,12 +31,8 @@ typedef struct __attribute__((packed)) {
 
 /* ─── Navigation mode payload ─── */
 
-/** Features + obstacle flag sent during navigation (MOSI). */
-typedef struct __attribute__((packed)) {
-    uint8_t  obstacle_flag;
-    uint8_t  msg_type;             /**< Must be 1 for nav features */
-    int8_t   features[288];        /**< 3×3×32 encoder output (int8) */
-} spi_nav_features_t;
+/** Navigation mode: features are sent as raw bytes after the 2B header.
+ *  Total MOSI = 2 + ENCODER_FEAT_SIZE bytes. */
 
 /**
  * @brief Initialize SPI master bus and device.
@@ -59,7 +56,7 @@ esp_err_t spi_exchange_collection(uint8_t obstacle,
  * @brief Navigation mode: send encoder features + obstacle flag.
  *
  * @param obstacle   0=clear, 1=blocked
- * @param features   3×3×32 = 288 bytes of int8 encoder features.
+ * @param features   8×8×1024 = 65536 bytes of int8 encoder features.
  * @param out_action Receives the action Motor Board chose.
  * @param out_heading Receives IMU heading.
  * @return ESP_OK on success.

@@ -6,23 +6,25 @@
  * Each transaction: receive obstacle/features on MOSI, send heading+action on MISO.
  */
 #include "spi_slave.h"
+#include "correlation.h"
 #include "config.h"
 #include "esp_log.h"
 #include "driver/spi_slave.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include <string.h>
 
 static const char *TAG = "spi_slave";
 
 /*
- * Max transaction size = 290 bytes (2B header + 288B features in nav mode).
- * Must be DMA-aligned (word-aligned) and in DMA-capable memory.
+ * Max transaction size = 2B header + 65536B features in nav mode.
+ * Buffers allocated in PSRAM at init time.
  */
-#define SPI_BUF_SIZE  292   /* round up to 4-byte alignment */
+#define SPI_BUF_SIZE  (2 + ENCODER_FEAT_RAW_SIZE)   /* 65538, rounded up */
 
-/* DMA-capable buffers (must be word-aligned) */
-WORD_ALIGNED_ATTR static uint8_t s_rx_buf[SPI_BUF_SIZE];
-WORD_ALIGNED_ATTR static uint8_t s_tx_buf[SPI_BUF_SIZE];
+/* DMA-capable buffers — allocated in PSRAM */
+static uint8_t *s_rx_buf = NULL;
+static uint8_t *s_tx_buf = NULL;
 
 esp_err_t spi_slave_init(void)
 {
@@ -42,6 +44,18 @@ esp_err_t spi_slave_init(void)
         .mode         = 0,   /* CPOL=0, CPHA=0 — must match master */
     };
 
+    /* Allocate DMA buffers in PSRAM */
+    if (!s_rx_buf) {
+        s_rx_buf = (uint8_t *)heap_caps_aligned_alloc(
+            4, SPI_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
+        s_tx_buf = (uint8_t *)heap_caps_aligned_alloc(
+            4, SPI_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
+        if (!s_rx_buf || !s_tx_buf) {
+            ESP_LOGE(TAG, "Failed to alloc SPI buffers in PSRAM");
+            return ESP_FAIL;
+        }
+    }
+
     esp_err_t ret = spi_slave_initialize(SPI2_HOST, &bus_cfg, &slave_cfg,
                                           SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
@@ -50,8 +64,8 @@ esp_err_t spi_slave_init(void)
     }
 
     /* Clear buffers */
-    memset(s_rx_buf, 0, sizeof(s_rx_buf));
-    memset(s_tx_buf, 0, sizeof(s_tx_buf));
+    memset(s_rx_buf, 0, SPI_BUF_SIZE);
+    memset(s_tx_buf, 0, SPI_BUF_SIZE);
 
     ESP_LOGI(TAG, "SPI slave initialized");
     return ESP_OK;
@@ -67,7 +81,7 @@ void spi_slave_set_response(uint8_t action, float heading)
      *
      * Rest of tx_buf is zero-padded.
      */
-    memset(s_tx_buf, 0, sizeof(s_tx_buf));
+    memset(s_tx_buf, 0, SPI_BUF_SIZE);
     s_tx_buf[0] = action;
     s_tx_buf[1] = 0;
     memcpy(&s_tx_buf[2], &heading, sizeof(float));
@@ -78,7 +92,7 @@ esp_err_t spi_slave_receive(uint8_t *out_obstacle,
                             int8_t *out_features,
                             uint32_t timeout_ms)
 {
-    memset(s_rx_buf, 0, sizeof(s_rx_buf));
+    memset(s_rx_buf, 0, SPI_BUF_SIZE);
 
     spi_slave_transaction_t t = {
         .length    = SPI_BUF_SIZE * 8,     /* in bits */
@@ -96,9 +110,9 @@ esp_err_t spi_slave_receive(uint8_t *out_obstacle,
     *out_obstacle = s_rx_buf[0];
     *out_msg_type = s_rx_buf[1];
 
-    /* If nav features, copy the 288-byte feature payload */
+    /* If nav features, copy the feature payload */
     if (*out_msg_type == 1 && out_features != NULL) {
-        memcpy(out_features, &s_rx_buf[2], 288);
+        memcpy(out_features, &s_rx_buf[2], ENCODER_FEAT_RAW_SIZE);
     }
 
     return ESP_OK;

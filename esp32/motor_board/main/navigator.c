@@ -7,10 +7,11 @@
  *   2. Per step:
  *      a. Set SPI response with previous action + heading
  *      b. Wait for SPI transaction → receive obs features + obstacle flag
- *      c. Correlate obs with goal → 83-dim cue
- *      d. Run policy → action logits → argmax
- *      e. Safety override if obstacle
- *      f. Execute motor action
+ *      c. Pool obs features 8×8 → 4×4
+ *      d. Correlate obs with goal → 258-dim cue
+ *      e. Run policy → action logits → argmax
+ *      f. Safety override if obstacle
+ *      g. Execute motor action
  */
 #include "navigator.h"
 #include "inference.h"
@@ -28,11 +29,12 @@
 #include "nvs_flash.h"
 
 #include <string.h>
+#include "esp_heap_caps.h"
 
 static const char *TAG = "navigator";
 
-/** Cached goal features — set once per episode. */
-static int8_t s_goal_features[CORR_FEAT_SIZE];
+/** Cached goal features (pooled 4×4×1024) — allocated in PSRAM. */
+static int8_t *s_goal_features = NULL;
 
 static const char *ACTION_NAMES[] = {"FWD", "RIGHT", "LEFT", "STOP"};
 
@@ -68,9 +70,20 @@ static void navigation_task(void *pvParam)
     ESP_LOGI(TAG, "Starting navigation (max %d steps, %d Hz)...",
              NAV_MAX_STEPS, NAV_RATE_HZ);
 
-    int8_t obs_features[CORR_FEAT_SIZE];
-    int8_t corr_cue[CORR_CUE_SIZE];
+    /* Allocate buffers in PSRAM */
+    if (!s_goal_features) {
+        s_goal_features = (int8_t *)heap_caps_malloc(CORR_FEAT_SIZE, MALLOC_CAP_SPIRAM);
+    }
+    int8_t *obs_features_raw = (int8_t *)heap_caps_malloc(ENCODER_FEAT_RAW_SIZE, MALLOC_CAP_SPIRAM);
+    int8_t *obs_features = (int8_t *)heap_caps_malloc(CORR_FEAT_SIZE, MALLOC_CAP_SPIRAM);
+    int8_t *corr_cue = (int8_t *)heap_caps_malloc(CORR_CUE_SIZE, MALLOC_CAP_SPIRAM);
     int8_t action_logits[4];
+
+    if (!s_goal_features || !obs_features_raw || !obs_features || !corr_cue) {
+        ESP_LOGE(TAG, "Failed to allocate nav buffers in PSRAM!");
+        vTaskDelete(NULL);
+        return;
+    }
 
     int step = 0;
     uint8_t last_action = ACTION_STOP;
@@ -89,7 +102,7 @@ static void navigation_task(void *pvParam)
         uint8_t msg_type = 0;
 
         err = spi_slave_receive(
-            &obstacle_flag, &msg_type, obs_features, 2000
+            &obstacle_flag, &msg_type, obs_features_raw, 2000
         );
 
         if (err != ESP_OK) {
@@ -105,7 +118,10 @@ static void navigation_task(void *pvParam)
             continue;
         }
 
-        /* 3. If no goal yet, use first frame as goal */
+        /* 3. Pool raw 8×8 features to 4×4 */
+        correlation_pool_features(obs_features_raw, obs_features);
+
+        /* 4. If no goal yet, use first frame as goal */
         if (!have_goal) {
             memcpy(s_goal_features, obs_features, CORR_FEAT_SIZE);
             have_goal = true;
@@ -119,10 +135,10 @@ static void navigation_task(void *pvParam)
             continue;
         }
 
-        /* 4. Correlate obs with goal → 83-dim cue */
+        /* 5. Correlate obs with goal → 258-dim cue */
         correlation_compute(s_goal_features, obs_features, corr_cue);
 
-        /* 5. Run policy MLP */
+        /* 6. Run policy MLP */
         err = inference_run_policy(corr_cue, action_logits);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Policy inference failed");
@@ -132,23 +148,23 @@ static void navigation_task(void *pvParam)
         int policy_idx = inference_argmax_i8(action_logits, 4);
         uint8_t action = (uint8_t)policy_idx;
 
-        /* 6. Safety override */
+        /* 7. Safety override */
         if (obstacle_flag && action == ACTION_FORWARD) {
             ESP_LOGW(TAG, "Obstacle override! FWD → RIGHT");
             action = ACTION_TURN_RIGHT;
         }
 
-        /* 7. Execute action */
+        /* 8. Execute action */
         motor_execute_action(action);
         last_action = action;
 
-        /* 8. Termination check */
+        /* 9. Termination check */
         if (action == ACTION_STOP) {
             ESP_LOGI(TAG, "Policy chose STOP — goal reached!");
             break;
         }
 
-        /* 9. Logging */
+        /* 10. Logging */
         int64_t t_elapsed_us = esp_timer_get_time() - t_start;
         if (step % 5 == 0) {
             const char *aname = (action < 4) ? ACTION_NAMES[action] : "?";

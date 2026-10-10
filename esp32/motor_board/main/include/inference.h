@@ -2,7 +2,7 @@
  * @file inference.h
  * @brief TFLite Micro inference — policy only on Motor Board.
  *
- * The Motor Board runs the policy MLP: 83-dim cue → 4 action logits.
+ * The Motor Board runs the policy MLP: 258-dim cue → 4 action logits.
  * The encoder runs on the Camera Board and sends features via SPI.
  */
 #ifndef INFERENCE_H
@@ -16,8 +16,8 @@
 extern "C" {
 #endif
 
-/** TFLite Micro arena for policy (small — only 3 FC layers). */
-#define TFLITE_ARENA_SIZE   (16 * 1024)   /* 16 KB */
+/** TFLite Micro arena for policy — allocated in PSRAM at runtime. */
+#define TFLITE_ARENA_SIZE   (64 * 1024)   /* 64 KB — 3 FC layers, 258-dim input */
 
 /**
  * @brief Initialize TFLite Micro interpreter for the policy.
@@ -28,10 +28,10 @@ esp_err_t inference_init(void);
 /**
  * @brief Run the policy MLP on a correlation cue.
  *
- * Input:  83-dim int8 correlation cue
+ * Input:  258-dim int8 correlation cue
  * Output: 4 int8 action logits
  *
- * @param[in]  corr_cue      83-dim int8 correlation cue.
+ * @param[in]  corr_cue      258-dim int8 correlation cue.
  * @param[out] action_logits 4 int8 logits (higher = better action).
  * @return ESP_OK on success.
  */

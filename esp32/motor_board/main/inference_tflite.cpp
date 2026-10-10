@@ -2,11 +2,12 @@
  * @file inference.cpp
  * @brief TFLite Micro — policy-only inference on Motor Board.
  *
- * The Motor Board runs the policy MLP: 83-dim correlation cue → 4 action logits.
+ * The Motor Board runs the policy MLP: 258-dim correlation cue → 4 action logits.
  * Encoder features arrive from Camera Board via SPI; correlation is done in plain C.
  */
 #include "inference.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -26,9 +27,9 @@ static const unsigned int policy_model_len = 0;
 static const char *TAG = "inference";
 
 /* TFLite Micro state */
-static uint8_t policy_arena[TFLITE_ARENA_SIZE] __attribute__((aligned(16)));
+static uint8_t *policy_arena = nullptr;  /* Allocated in PSRAM */
 static tflite::MicroInterpreter *policy_interp = nullptr;
-static tflite::MicroMutableOpResolver<4> resolver;
+static tflite::MicroMutableOpResolver<6> resolver;
 static bool s_initialized = false;
 
 esp_err_t inference_init(void)
@@ -44,9 +45,21 @@ esp_err_t inference_init(void)
         return ESP_ERR_NOT_FOUND;
     }
 
+    /* Allocate arena in PSRAM */
+    if (!policy_arena) {
+        policy_arena = (uint8_t *)heap_caps_aligned_alloc(
+            16, TFLITE_ARENA_SIZE, MALLOC_CAP_SPIRAM);
+        if (!policy_arena) {
+            ESP_LOGE(TAG, "Failed to allocate policy arena in PSRAM!");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     /* Register ops used by TinyPolicy (3 FC layers + ReLU) */
     resolver.AddFullyConnected();
     resolver.AddRelu();
+    resolver.AddReshape();
+    resolver.AddTranspose();
     resolver.AddQuantize();
     resolver.AddDequantize();
 

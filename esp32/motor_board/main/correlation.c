@@ -1,6 +1,9 @@
 /**
  * @file correlation.c
  * @brief INT8 cross-correlation — runs on ESP32-S3, no TFLite needed.
+ *
+ * Updated for 8×8×1024 encoder features, pooled to 4×4×1024 before
+ * computing the 258-dim correlation cue.
  */
 #include "correlation.h"
 #include <string.h>
@@ -77,34 +80,65 @@ static int8_t cosine_sim_i8(const int8_t *a, const int8_t *b, int len)
     return (int8_t)result;
 }
 
+void correlation_pool_features(const int8_t *src, int8_t *dst)
+{
+    /*
+     * Average-pool 8×8 → 4×4 with 2×2 kernel, stride 2.
+     * For each output position (dy, dx) and channel c:
+     *   dst[dy][dx][c] = mean(src[2*dy:2*dy+2][2*dx:2*dx+2][c])
+     *
+     * Layout: position-major [pos][ch], where pos = row * W + col.
+     */
+    for (int dy = 0; dy < CORR_FEAT_H; dy++) {
+        for (int dx = 0; dx < CORR_FEAT_W; dx++) {
+            int dst_pos = dy * CORR_FEAT_W + dx;
+            int sy = dy * 2;
+            int sx = dx * 2;
+
+            for (int c = 0; c < CORR_FEAT_CH; c++) {
+                int32_t sum = 0;
+                /* 2×2 pooling window */
+                sum += (int32_t)src[((sy + 0) * ENCODER_FEAT_W + (sx + 0)) * ENCODER_FEAT_CH + c];
+                sum += (int32_t)src[((sy + 0) * ENCODER_FEAT_W + (sx + 1)) * ENCODER_FEAT_CH + c];
+                sum += (int32_t)src[((sy + 1) * ENCODER_FEAT_W + (sx + 0)) * ENCODER_FEAT_CH + c];
+                sum += (int32_t)src[((sy + 1) * ENCODER_FEAT_W + (sx + 1)) * ENCODER_FEAT_CH + c];
+                /* Average (round towards zero) */
+                dst[dst_pos * CORR_FEAT_CH + c] = (int8_t)(sum / 4);
+            }
+        }
+    }
+}
+
 void correlation_compute(const int8_t *goal_feat, const int8_t *obs_feat,
                          int8_t *cue)
 {
     /*
      * Feature map layout: [position][channel]
-     * Position index for 3x3 grid:
-     *   0  1  2
-     *   3  4  5
-     *   6  7  8
-     * Each position has CORR_FEAT_CH (32) channels.
+     * Position index for 4×4 grid:
+     *    0  1  2  3
+     *    4  5  6  7
+     *    8  9 10 11
+     *   12 13 14 15
+     * Each position has CORR_FEAT_CH (1024) channels.
      */
+    int n_pos = CORR_FEAT_H * CORR_FEAT_W;  /* 16 */
 
-    /* ── 9x9 Cross-correlation ── */
-    for (int g = 0; g < 9; g++) {
+    /* ── 16×16 Cross-correlation ── */
+    for (int g = 0; g < n_pos; g++) {
         const int8_t *g_vec = &goal_feat[g * CORR_FEAT_CH];
-        for (int o = 0; o < 9; o++) {
+        for (int o = 0; o < n_pos; o++) {
             const int8_t *o_vec = &obs_feat[o * CORR_FEAT_CH];
-            cue[g * 9 + o] = cosine_sim_i8(g_vec, o_vec, CORR_FEAT_CH);
+            cue[g * n_pos + o] = cosine_sim_i8(g_vec, o_vec, CORR_FEAT_CH);
         }
     }
 
     /* ── Left/Right similarity ── */
-    /* Left positions:  col 0 → indices 0, 3, 6 */
-    /* Right positions: col 2 → indices 2, 5, 8 */
-    static const int left_idx[3]  = {0, 3, 6};
-    static const int right_idx[3] = {2, 5, 8};
+    /* Left positions:  col 0 → indices 0, 4, 8, 12 */
+    /* Right positions: col 3 → indices 3, 7, 11, 15 */
+    static const int left_idx[4]  = {0, 4, 8, 12};
+    static const int right_idx[4] = {3, 7, 11, 15};
 
-    /* Average the 3 left positions' feature vectors */
+    /* Average the 4 left/right positions' feature vectors */
     int32_t g_left_avg[CORR_FEAT_CH];
     int32_t o_left_avg[CORR_FEAT_CH];
     int32_t g_right_avg[CORR_FEAT_CH];
@@ -114,7 +148,7 @@ void correlation_compute(const int8_t *goal_feat, const int8_t *obs_feat,
     memset(g_right_avg, 0, sizeof(g_right_avg));
     memset(o_right_avg, 0, sizeof(o_right_avg));
 
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < 4; k++) {
         int li = left_idx[k];
         int ri = right_idx[k];
         for (int c = 0; c < CORR_FEAT_CH; c++) {

@@ -7,12 +7,13 @@
  *
  * Two modes:
  *   Collection: 6-byte transaction (obstacle → heading+action)
- *   Navigation: 290-byte transaction (obstacle+features → heading+action)
+ *   Navigation: 65538-byte transaction (obstacle+features → heading+action)
  */
 #include "spi_master.h"
 #include "config.h"
 #include "esp_log.h"
 #include "driver/spi_master.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include <string.h>
 
@@ -27,7 +28,7 @@ esp_err_t spi_master_init(void)
         .sclk_io_num   = SPI_MASTER_CLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 512,
+        .max_transfer_sz = 66 * 1024,  /* 66 KB for nav features */
     };
 
     esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
@@ -111,25 +112,35 @@ esp_err_t spi_exchange_nav_features(uint8_t obstacle,
                                     float *out_heading)
 {
     /*
-     * Navigation transaction: 290 bytes MOSI, 6 bytes useful MISO.
-     * MOSI: [obstacle_flag, msg_type=1, features[288]]
+     * Navigation transaction: ENCODER_FEAT_RAW_SIZE+2 bytes MOSI.
+     * MOSI: [obstacle_flag, msg_type=1, features[ENCODER_FEAT_SIZE]]
      * MISO: [action_taken, pad, heading_deg, pad...]
      *
-     * Both buffers must be same size for full-duplex, so we
-     * use 290-byte buffers and ignore the trailing MISO bytes.
+     * Both buffers must be same size for full-duplex.
+     * Allocated in PSRAM because they are ~65 KB each.
      */
-    static uint8_t tx_buf[290];
-    static uint8_t rx_buf[290];
+    static uint8_t *tx_buf = NULL;
+    static uint8_t *rx_buf = NULL;
+    const int buf_size = 2 + ENCODER_FEAT_SIZE;
 
-    memset(tx_buf, 0, sizeof(tx_buf));
+    if (!tx_buf) {
+        tx_buf = (uint8_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
+        rx_buf = (uint8_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
+        if (!tx_buf || !rx_buf) {
+            ESP_LOGE(TAG, "Failed to alloc SPI nav buffers");
+            return ESP_FAIL;
+        }
+    }
+
+    memset(tx_buf, 0, buf_size);
     tx_buf[0] = obstacle;
     tx_buf[1] = 1;   /* msg_type = nav features */
-    memcpy(&tx_buf[2], features, 288);
+    memcpy(&tx_buf[2], features, ENCODER_FEAT_SIZE);
 
-    memset(rx_buf, 0, sizeof(rx_buf));
+    memset(rx_buf, 0, buf_size);
 
     spi_transaction_t t = {
-        .length    = sizeof(tx_buf) * 8,
+        .length    = buf_size * 8,
         .tx_buffer = tx_buf,
         .rx_buffer = rx_buf,
     };
