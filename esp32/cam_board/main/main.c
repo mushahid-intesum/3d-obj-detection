@@ -114,7 +114,7 @@ static void collection_task(void *pvParam)
  *  Navigation Mode — encoder + SPI features
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/** Frame buffer for downscaled 256x256 image. */
+/** Frame buffer for downscaled 128x128 image. */
 static uint8_t s_img_buf[IMG_TARGET_SIZE];
 
 static void navigation_task(void *pvParam)
@@ -132,10 +132,10 @@ static void navigation_task(void *pvParam)
             continue;
         }
 
-        /* 2. Downsample JPEG→RGB565→256x256 RGB888 */
+        /* 2. Downsample JPEG→RGB565→128x128 RGB888 */
         image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
 
-        /* 3. Run encoder: 256x256 RGB → 16×16×1024 features */
+        /* 3. Run encoder: 128x128 RGB → 8×8×1024 features */
         int8_t features[ENCODER_FEAT_SIZE];
         esp_err_t enc_ret = inference_run_encoder(s_img_buf, features);
         if (enc_ret != ESP_OK) {

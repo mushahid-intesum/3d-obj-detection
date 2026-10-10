@@ -32,7 +32,7 @@ SEED                = 42
 def load_merged_dataset(merged_dir):
     """Load the merged dataset and segment index."""
     data = np.load(os.path.join(merged_dir, "dataset.npz"))
-    frames = data["frames"]     # (N, 48, 48, 3) uint8
+    frames = data["frames"]     # (N, 128, 128, 3) uint8
     actions = data["actions"]   # (N,) int32
 
     with open(os.path.join(merged_dir, "segments.json"), "r") as f:

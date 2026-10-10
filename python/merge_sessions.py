@@ -9,7 +9,7 @@ Input (per session, from receiver.py):
 
 Output:
     data/merged/
-      dataset.npz            ← frames (N, 48, 48, 3) uint8, actions (N,) int32
+      dataset.npz            ← frames (N, 128, 128, 3) uint8, actions (N,) int32
       segments.json           ← segment boundaries [{start, end, length, source}]
       dataset_meta.json       ← summary metadata
 
@@ -31,7 +31,7 @@ from PIL import Image
 DATA_ROOT           = "./data"
 OUTPUT_DIR          = "./data/merged"
 MIN_SEGMENT_LENGTH  = 5       # discard segments shorter than this
-IMG_SIZE            = 256
+IMG_SIZE            = 128
 # ═══════════════════════════════════════════
 
 
@@ -63,7 +63,7 @@ def load_session(session_dir):
     Load one session's images and trajectory.
 
     Returns:
-        frames: np.array (N, 48, 48, 3) uint8
+        frames: np.array (N, 128, 128, 3) uint8
         trajectory: list of dicts from trajectory.jsonl
     """
     traj_path = os.path.join(session_dir, "trajectory.jsonl")
@@ -93,7 +93,7 @@ def load_session(session_dir):
             img = img.resize((IMG_SIZE, IMG_SIZE), Image.LANCZOS)
         frames.append(np.array(img, dtype=np.uint8))
 
-    frames = np.stack(frames, axis=0)  # (N, 48, 48, 3)
+    frames = np.stack(frames, axis=0)  # (N, 128, 128, 3)
     return frames, trajectory
 
 
@@ -189,7 +189,7 @@ def main():
         })
         offset += seg_len
 
-    all_frames = np.concatenate(all_frames_list, axis=0)   # (N, 48, 48, 3)
+    all_frames = np.concatenate(all_frames_list, axis=0)   # (N, 128, 128, 3)
     all_actions = np.concatenate(all_actions_list, axis=0)  # (N,)
 
     # Save
@@ -213,7 +213,7 @@ def main():
         "total_segments": len(all_segments),
         "sessions": [os.path.basename(s) for s in sessions],
         "action_distribution": action_counts,
-        "img_shape": [48, 48, 3],
+        "img_shape": [128, 128, 3],
     }
     with open(os.path.join(OUTPUT_DIR, "dataset_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)

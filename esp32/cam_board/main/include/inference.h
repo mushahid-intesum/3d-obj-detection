@@ -2,8 +2,8 @@
  * @file inference.h
  * @brief Depth guard + encoder inference on Camera Board.
  *
- * Depth guard:  256×256 RGB → obstacle probability (binary)
- * Encoder:      256×256 RGB → 16×16×1024 feature map (for navigation)
+ * Depth guard:  128×128 RGB → obstacle probability (binary)
+ * Encoder:      128×128 RGB → 8×8×1024 feature map (for navigation)
  *
  * Both use TFLite Micro INT8 models.
  */
@@ -20,18 +20,18 @@ extern "C" {
 
 /* ── Model dimensions ── */
 
-/** Depth guard input: 256×256×3 = 196608 bytes. */
-#define DEPTH_GUARD_INPUT_SIZE  (256 * 256 * 3)
+/** Depth guard input: 128×128×3 = 49152 bytes. */
+#define DEPTH_GUARD_INPUT_SIZE  (128 * 128 * 3)
 
 /** Depth guard output: 1 INT8 value (obstacle logit). */
 #define DEPTH_GUARD_OUTPUT_SIZE 1
 
-/** Encoder feature output: 16×16×1024 = 262144 bytes. */
-#define ENCODER_FEAT_SIZE       (16 * 16 * 1024)
+/** Encoder feature output: 8×8×1024 = 65536 bytes. */
+#define ENCODER_FEAT_SIZE       (8 * 8 * 1024)
 
 /** TFLite Micro arena sizes. */
-#define DEPTH_GUARD_ARENA_SIZE  (512 * 1024)   /* 512 KB */
-#define ENCODER_ARENA_SIZE      (1024 * 1024)  /* 1 MB */
+#define DEPTH_GUARD_ARENA_SIZE  (128 * 1024)   /* 128 KB */
+#define ENCODER_ARENA_SIZE      (256 * 1024)   /* 256 KB */
 
 /** Obstacle detection threshold on INT8 logit output.
  *  Corresponds to sigmoid(0) = 0.5 probability.
@@ -50,10 +50,10 @@ esp_err_t depth_guard_init(void);
 /**
  * @brief Run depth guard: is there an obstacle ahead?
  *
- * Input:  256×256×3 RGB888 image (uint8, will be quantized to int8 internally)
+ * Input:  128×128×3 RGB888 image (uint8, will be quantized to int8 internally)
  * Output: true if obstacle detected within ~30cm ahead
  *
- * @param[in]  img_rgb888    256×256×3 uint8 image.
+ * @param[in]  img_rgb888    128×128×3 uint8 image.
  * @param[out] is_blocked    Set to true if obstacle detected.
  * @return ESP_OK on success, ESP_ERR_INVALID_STATE if not initialized.
  */
@@ -66,12 +66,12 @@ esp_err_t depth_guard_run(const uint8_t *img_rgb888, bool *is_blocked);
 esp_err_t inference_init(void);
 
 /**
- * @brief Run the encoder on a 256×256 RGB image.
+ * @brief Run the encoder on a 128×128 RGB image.
  *
- * Input:  256×256×3 uint8 image
- * Output: 16×16×1024 int8 feature map
+ * Input:  128×128×3 uint8 image
+ * Output: 8×8×1024 int8 feature map
  *
- * @param[in]  img_rgb888    256×256×3 uint8 image.
+ * @param[in]  img_rgb888    128×128×3 uint8 image.
  * @param[out] features      Output feature map.
  * @return ESP_OK on success.
  */

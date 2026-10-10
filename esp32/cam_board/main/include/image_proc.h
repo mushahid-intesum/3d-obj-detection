@@ -8,13 +8,13 @@
 #include <stdint.h>
 
 /** Target image dimensions for the navigation model. */
-#define IMG_TARGET_W    256
-#define IMG_TARGET_H    256
+#define IMG_TARGET_W    128
+#define IMG_TARGET_H    128
 #define IMG_TARGET_CH   3
 #define IMG_TARGET_SIZE (IMG_TARGET_W * IMG_TARGET_H * IMG_TARGET_CH)
 
 /**
- * @brief Downsample RGB565 image to 256x256 RGB888.
+ * @brief Downsample RGB565 image to 128x128 RGB888.
  *
  * Uses area-averaging (box filter) for anti-aliased downscaling.
  * The 160° fisheye distortion is intentionally preserved.

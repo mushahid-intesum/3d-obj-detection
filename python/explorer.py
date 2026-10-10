@@ -32,7 +32,7 @@ OBSTACLE_THRESH_CM  = 12                    # ultrasonic override threshold
 # Protocol constants (must match wifi_stream.h)
 MAGIC = 0x494D4731
 HEADER_SIZE = 11
-IMG_W, IMG_H, IMG_CH = 256, 256, 3
+IMG_W, IMG_H, IMG_CH = 128, 128, 3
 
 # Actions: pink noise generates 0=forward, 1=left, 2=right
 # Mapped to firmware commands: F=NORTH, B=SOUTH, L=WEST, R=EAST, S=STAY
@@ -69,7 +69,7 @@ def receive_frame(sock):
     last_action = header[10]
 
     # Read image data — try JPEG (variable len) or fixed RGB
-    # The firmware sends raw RGB888 (48x48x3 = 6912 bytes) for collection
+    # The firmware sends raw RGB888 (128x128x3 = 49152 bytes) for collection
     img_size = IMG_W * IMG_H * IMG_CH
     img_data = recv_exact(sock, img_size)
     image = np.frombuffer(img_data, dtype=np.uint8).reshape(IMG_H, IMG_W, IMG_CH)

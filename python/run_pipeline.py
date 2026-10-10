@@ -11,7 +11,7 @@ offline RL dataset:
 
 Produces:
     data/offline_dataset/
-      frames.npz          — shared image bank (N, 48, 48, 3)
+      frames.npz          — shared image bank (N, 128, 128, 3)
       transitions.npz     — obs_idx, next_obs_idx, goal_idx, actions, rewards, dones
       dataset_info.json   — statistics
 

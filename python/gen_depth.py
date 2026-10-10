@@ -27,7 +27,7 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 #  Configuration — edit these constants directly
 # ═══════════════════════════════════════════════
 SOURCE           = "nyu"        # "nyu" or "mcu"
-DEPTH_MAP_SIZE   = 256          # Output depth map resolution (NxN)
+DEPTH_MAP_SIZE   = 128          # Output depth map resolution (NxN)
 MODEL_ID         = "depth-anything/Depth-Anything-V2-Small-hf"
 NYU_DATASET_ID   = "sayakpaul/nyu_depth_v2"
 NYU_CACHE_DIR    = "./data/nyu_depth_v2_cache"
@@ -128,8 +128,8 @@ def process_nyu(model, processor, device):
     Download and process NYU Depth V2 from HuggingFace.
 
     Saves:
-        data/nyu_depth_v2_cache/train/images/   ← resized 48×48 RGB
-        data/nyu_depth_v2_cache/train/depth/    ← DA-V2 48×48 depth maps
+        data/nyu_depth_v2_cache/train/images/   ← resized 128×128 RGB
+        data/nyu_depth_v2_cache/train/depth/    ← DA-V2 128×128 depth maps
         data/nyu_depth_v2_cache/val/images/
         data/nyu_depth_v2_cache/val/depth/
     """
@@ -172,9 +172,9 @@ def process_nyu(model, processor, device):
             sample = split[idx]
             img = sample["image"].convert("RGB")
 
-            # Save resized image (48×48 for student training)
-            img_48 = img.resize((DEPTH_MAP_SIZE, DEPTH_MAP_SIZE), Image.LANCZOS)
-            img_48.save(img_path, quality=95)
+            # Save resized image (128×128 for student training)
+            img_128 = img.resize((DEPTH_MAP_SIZE, DEPTH_MAP_SIZE), Image.LANCZOS)
+            img_128.save(img_path, quality=95)
 
             # Collect for batch processing
             batch_imgs.append(img)

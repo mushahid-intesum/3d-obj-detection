@@ -16,7 +16,7 @@ import time
 NYU_CACHE_DIR      = "./data/nyu_depth_v2_cache"
 MCU_DATA_DIR       = "./data"
 OUTPUT_DIR         = "./checkpoints/depth_guard"
-IMG_SIZE           = 256
+IMG_SIZE           = 128
 DEVICE             = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Data source
@@ -90,10 +90,10 @@ class MicroDepthAnything(nn.Module):
         transformer blocks
       - Head: global pool → 2-layer MLP classifier
 
-    Input:  (B, 3, 256, 256)  RGB image
+    Input:  (B, 3, 128, 128)  RGB image
     Output: (B, 1)          obstacle logit (sigmoid → probability)
 
-    256×256 → stem[128²] → S1[64²] → S2[32²] → S3[16²] → GAP → MLP → 1
+    128×128 → stem[64²] → S1[32²] → S2[16²] → S3[8²] → GAP → MLP → 1
     """
 
     def __init__(self, channels=None, blocks=None, head_dim=None):
@@ -108,7 +108,7 @@ class MicroDepthAnything(nn.Module):
         b0, b1, b2, b3 = blocks
 
         # Stem — patch embedding (like DINOv2 patch projection)
-        # 256×256 → 128×128
+        # 128×128 → 64×64
         self.stem = nn.Sequential(
             nn.Conv2d(3, c0, 3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(c0),
@@ -116,9 +116,9 @@ class MicroDepthAnything(nn.Module):
         )
 
         # Hierarchical stages — each halves spatial resolution
-        self.stage1 = self._make_stage(c0, c1, b1)    # 128→64
-        self.stage2 = self._make_stage(c1, c2, b2)    # 64→32
-        self.stage3 = self._make_stage(c2, c3, b3)    # 32→16
+        self.stage1 = self._make_stage(c0, c1, b1)    # 64→32
+        self.stage2 = self._make_stage(c1, c2, b2)    # 32→16
+        self.stage3 = self._make_stage(c2, c3, b3)    # 16→8
 
         # Classification head — DPT-style projection + classifier
         self.head = nn.Sequential(

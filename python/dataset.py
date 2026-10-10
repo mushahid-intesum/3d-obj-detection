@@ -3,7 +3,7 @@
 dataset.py — PyTorch Dataset for offline RL image-goal navigation.
 
 Loads the index-based transition dataset produced by hindsight_relabel.py:
-  - frames.npz:      shared image bank (N, 48, 48, 3) uint8
+  - frames.npz:      shared image bank (N, 128, 128, 3) uint8
   - transitions.npz: obs_idx, next_obs_idx, goal_idx, actions, rewards, dones
 
 Serves (obs, goal, action, reward, next_obs, done) batches for IQL training.
@@ -37,7 +37,7 @@ class OfflineNavDataset(Dataset):
     to avoid duplication.
     """
 
-    def __init__(self, dataset_dir, img_size=256, augment=True):
+    def __init__(self, dataset_dir, img_size=128, augment=True):
         """
         Args:
             dataset_dir: Path to offline_dataset/ (output of hindsight_relabel.py).
@@ -50,7 +50,7 @@ class OfflineNavDataset(Dataset):
         # Load shared frame bank
         frames_path = os.path.join(dataset_dir, "frames.npz")
         print(f"[Dataset] Loading frames from {frames_path}")
-        self.frames = np.load(frames_path)["frames"]  # (N, 48, 48, 3) uint8
+        self.frames = np.load(frames_path)["frames"]  # (N, 128, 128, 3) uint8
 
         # Load transitions (indices + labels)
         trans_path = os.path.join(dataset_dir, "transitions.npz")
@@ -81,7 +81,7 @@ class OfflineNavDataset(Dataset):
 
     def _frame_to_tensor(self, idx):
         """Load frame by index and convert to (3, H, W) float32 tensor."""
-        img = self.frames[idx]  # (48, 48, 3) uint8
+        img = self.frames[idx]  # (128, 128, 3) uint8
         arr = img.astype(np.float32) / 255.0
         return torch.from_numpy(arr).permute(2, 0, 1)  # (3, H, W)
 
@@ -112,9 +112,9 @@ class OfflineNavDataset(Dataset):
             )
 
         return {
-            "obs":      obs,                                          # (3, 48, 48)
-            "goal":     goal,                                         # (3, 48, 48)
-            "next_obs": next_obs,                                     # (3, 48, 48)
+            "obs":      obs,                                          # (3, 128, 128)
+            "goal":     goal,                                         # (3, 128, 128)
+            "next_obs": next_obs,                                     # (3, 128, 128)
             "action":   torch.tensor(action, dtype=torch.long),       # scalar
             "reward":   torch.tensor(reward, dtype=torch.float32),    # scalar
             "done":     torch.tensor(done, dtype=torch.float32),      # scalar

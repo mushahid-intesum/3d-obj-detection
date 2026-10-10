@@ -102,9 +102,9 @@ def validate_session(session_dir):
             if i == 0 or i == n - 1:
                 try:
                     img = Image.open(img_path)
-                    if img.size != (256, 256):
+                    if img.size != (128, 128):
                         warnings.append(
-                            f"Step {i}: image size {img.size} != (256,256)")
+                            f"Step {i}: image size {img.size} != (128,128)")
                 except Exception as e:
                     bad_images += 1
                     errors.append(f"Step {i}: can't load image: {e}")

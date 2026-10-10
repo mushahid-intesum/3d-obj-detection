@@ -40,7 +40,7 @@ ESP32_IP        = "192.168.68.103"   # Camera Board IP
 ESP32_PORT      = 8888
 SESSION_NAME    = ""                # auto-generated if empty
 OUTPUT_DIR      = "data"            # base output directory
-IMG_SIZE        = 256               # resize to NxN
+IMG_SIZE        = 128               # resize to NxN
 SHOW_PREVIEW    = True              # live OpenCV preview
 # ═══════════════════════════════════════════════
 
@@ -111,7 +111,7 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
         # ── Receive JPEG data ──
         jpeg_data = recv_exact(sock, jpeg_len)
 
-        # ── Decode & resize to 256×256 ──
+        # ── Decode & resize to 128×128 ──
         img = Image.open(BytesIO(jpeg_data)).convert("RGB")
         img_resized = img.resize((IMG_SIZE, IMG_SIZE), Image.LANCZOS)
 

@@ -20,7 +20,7 @@ import torch.nn.functional as F
 ENC_CHANNELS       = [128, 256, 512, 1024]  # per-stage widths
 ENC_BLOCKS         = [2, 3, 4, 3]           # DSConv blocks per stage
 FEAT_DIM           = 1024                   # final feature channel dim
-FEAT_SIZE          = 16                     # spatial output (16×16)
+FEAT_SIZE          = 8                      # spatial output (8×8)
 
 # Correlation
 CORR_POOL_SIZE     = 4                      # pool features to 4×4 before corr
@@ -56,8 +56,8 @@ class TinyEncoder(nn.Module):
     """
     4-stage hierarchical encoder (MicroDepthAnything architecture).
 
-    Input:  (B, 3, 256, 256)
-    Output: (B, C3, 16, 16)
+    Input:  (B, 3, 128, 128)
+    Output: (B, C3, 8, 8)
 
     Uses depthwise-separable convolutions with configurable stage
     widths and block counts.
@@ -72,7 +72,7 @@ class TinyEncoder(nn.Module):
         c0, c1, c2, c3 = channels
         b0, b1, b2, b3 = blocks
 
-        # Stem — 256×256 → 128×128
+        # Stem — 128×128 → 64×64
         self.stem = nn.Sequential(
             nn.Conv2d(3, c0, 3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(c0),
@@ -80,9 +80,9 @@ class TinyEncoder(nn.Module):
         )
 
         # Hierarchical stages — each halves spatial resolution
-        self.stage1 = self._make_stage(c0, c1, b1)    # 128→64
-        self.stage2 = self._make_stage(c1, c2, b2)    # 64→32
-        self.stage3 = self._make_stage(c2, c3, b3)    # 32→16
+        self.stage1 = self._make_stage(c0, c1, b1)    # 64→32
+        self.stage2 = self._make_stage(c1, c2, b2)    # 32→16
+        self.stage3 = self._make_stage(c2, c3, b3)    # 16→8
 
     @staticmethod
     def _make_stage(in_ch, out_ch, n_blocks):
@@ -104,7 +104,7 @@ class SimplifiedCorrelation(nn.Module):
     """
     Simplified correlation for MCU: 9x9 cross-correlation + 2 L/R scores.
 
-    Output dim = feat_h² × feat_w² + 2 = 65538 is too large for 16×16.
+    Output dim = feat_h² × feat_w² + 2 = 4098 is too large for 8×8.
     Use pooled correlation: pool features to 4×4 before correlation.
     Output dim = 4² × 4² + 2 = 258.
     """
@@ -121,7 +121,7 @@ class SimplifiedCorrelation(nn.Module):
     def forward(self, f_goal, f_obs):
         """
         Args:
-            f_goal: (B, C, H, W)  e.g. (B, 1024, 16, 16)
+            f_goal: (B, C, H, W)  e.g. (B, 1024, 8, 8)
             f_obs:  (B, C, H, W)
         Returns:
             cue: (B, 258)
@@ -274,8 +274,8 @@ if __name__ == "__main__":
 
     # Quick forward pass test
     model = StudentModel()
-    obs = torch.randn(2, 3, 256, 256)
-    goal = torch.randn(2, 3, 256, 256)
+    obs = torch.randn(2, 3, 128, 128)
+    goal = torch.randn(2, 3, 128, 128)
     logits = model(obs, goal)
     print(f"\nForward pass: obs {obs.shape} → logits {logits.shape}")
     print(f"Logits: {logits}")
