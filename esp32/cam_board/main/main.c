@@ -40,10 +40,23 @@ static void collection_task(void *pvParam)
     uint32_t frame_id = 0;
     uint32_t timestep = 0;
 
-    ESP_LOGI(TAG, "Collection loop started (cycle=%d ms)", EXPLORE_CYCLE_MS);
+    ESP_LOGI(TAG, "Collection loop started (step-and-stop, cycle=%d ms)",
+             EXPLORE_CYCLE_MS);
 
     while (stream_is_connected()) {
-        /* 1. Capture JPEG frame */
+        /* ── Step-and-stop cycle ──
+         *
+         * The motor board executes actions in blocking 500ms bursts.
+         * This camera loop runs in parallel:
+         *   1. Capture frame (while motors are stopped from previous step)
+         *   2. Run depth guard on the captured frame
+         *   3. SPI exchange: send obstacle flag → receive action+heading
+         *      Motor board then executes the action (500ms burst)
+         *   4. Stream frame + metadata to laptop
+         *   5. Wait for motor action to complete before next capture
+         */
+
+        /* 1. Capture JPEG frame (motors are stopped at this point) */
         camera_fb_t *fb = camera_capture_frame();
         if (!fb) {
             ESP_LOGW(TAG, "Frame capture failed, skipping");
@@ -54,7 +67,6 @@ static void collection_task(void *pvParam)
         /* 2. Depth guard — run obstacle detector on downsampled frame */
         uint8_t obstacle_flag = 0;
         {
-            /* Downsample JPEG to 48×48 RGB888 for depth guard */
             static uint8_t dg_img[IMG_TARGET_SIZE];
             image_downsample(fb->buf, fb->width, fb->height, dg_img);
 
@@ -63,7 +75,10 @@ static void collection_task(void *pvParam)
             obstacle_flag = blocked ? 1 : 0;
         }
 
-        /* 3. SPI exchange with Motor Board */
+        /* 3. SPI exchange with Motor Board
+         *    → sends obstacle flag
+         *    ← receives action_taken + heading_deg
+         *    Motor board then executes the action (blocking burst) */
         uint8_t action_taken = ACTION_STOP;
         float heading_deg = 0.0f;
 
@@ -88,6 +103,9 @@ static void collection_task(void *pvParam)
 
         frame_id++;
         timestep++;
+
+        /* 5. Wait for motor action to complete (~500ms burst + settle)
+         *    before capturing the next frame */
         vTaskDelay(pdMS_TO_TICKS(EXPLORE_CYCLE_MS));
     }
 

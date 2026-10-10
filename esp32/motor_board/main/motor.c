@@ -131,11 +131,32 @@ void motor_turn_right(uint32_t duration_ms)
 void motor_execute_action(uint8_t action_id)
 {
     switch (action_id) {
-        case ACTION_FORWARD:    ESP_LOGI(TAG, "FWD");   motor_forward(FORWARD_MS);       break;
-        case ACTION_TURN_RIGHT: ESP_LOGI(TAG, "RIGHT"); motor_turn_right(TURN_45_MS);    break;
-        case ACTION_TURN_LEFT:  ESP_LOGI(TAG, "LEFT");  motor_turn_left(TURN_45_MS);     break;
-        case ACTION_STOP:       ESP_LOGI(TAG, "STOP");  motor_stop();                    break;
-        default:                ESP_LOGW(TAG, "Unknown action %d", action_id);           break;
+        case ACTION_FORWARD:
+            ESP_LOGI(TAG, "FWD (%d ms burst)", STEP_BURST_MS);
+            motor_forward(STEP_BURST_MS);
+            break;
+
+        case ACTION_TURN_RIGHT:
+            ESP_LOGI(TAG, "RIGHT (%.0f° IMU-calibrated)", TURN_ANGLE_DEG);
+            motor_turn_relative(TURN_ANGLE_DEG, TURN_TOLERANCE,
+                                TURN_TIMEOUT_MS);
+            break;
+
+        case ACTION_TURN_LEFT:
+            ESP_LOGI(TAG, "LEFT (%.0f° IMU-calibrated)", TURN_ANGLE_DEG);
+            motor_turn_relative(-TURN_ANGLE_DEG, TURN_TOLERANCE,
+                                TURN_TIMEOUT_MS);
+            break;
+
+        case ACTION_STOP:
+            ESP_LOGI(TAG, "STOP");
+            motor_stop();
+            break;
+
+        default:
+            ESP_LOGW(TAG, "Unknown action %d", action_id);
+            motor_stop();
+            break;
     }
 }
 

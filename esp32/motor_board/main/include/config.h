@@ -27,10 +27,13 @@
 #define LEFT_MOTOR_SPEED       150
 #define RIGHT_MOTOR_SPEED        70
 
-/* Movement timing */
-#define FORWARD_MS      500
-#define TURN_90_MS      350
-#define TURN_45_MS      175
+/* Movement timing — step-and-stop bursts */
+#define STEP_BURST_MS   500       /* forward burst duration */
+#define TURN_90_MS      350       /* open-loop fallback only */
+#define TURN_45_MS      175       /* open-loop fallback only */
+#define TURN_ANGLE_DEG  45.0f     /* degrees per turn action */
+#define TURN_TOLERANCE  3.0f      /* IMU heading tolerance */
+#define TURN_TIMEOUT_MS 2000      /* max turn duration */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Arduino IMU (UART1)

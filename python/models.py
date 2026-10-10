@@ -33,34 +33,43 @@ class ResBlock(nn.Module):
         return F.relu(out + residual)
 
 
-# ─── Shared Encoder (ResNet-9) ───
+# ─── Shared Encoder ───
 
 class SharedEncoder(nn.Module):
     """
-    Weight-shared ResNet-9 encoder for both goal and observation images.
+    Weight-shared ResNet encoder for both goal and observation images.
 
     Input:  (B, 3, 48, 48) RGB image
-    Output: (B, 128, 6, 6) feature map
+    Output: (B, feat_dim, 6, 6) feature map
+
+    Configurable stage widths and block depths.
+    Default: [128, 256, 512] × [3, 4, 3] → ~21M params.
     """
 
-    def __init__(self, feat_dim=128):
+    def __init__(self, feat_dim=512, stage_channels=None, stage_blocks=None):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(32), nn.ReLU(inplace=True),
-            ResBlock(32),
+        if stage_channels is None:
+            stage_channels = [128, 256, feat_dim]
+        if stage_blocks is None:
+            stage_blocks = [3, 4, 3]
 
-            nn.Conv2d(32, 64, 3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(64), nn.ReLU(inplace=True),
-            ResBlock(64),
+        layers = []
+        in_ch = 3
+        for ch, n_blocks in zip(stage_channels, stage_blocks):
+            layers.extend([
+                nn.Conv2d(in_ch, ch, 3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(ch),
+                nn.ReLU(inplace=True),
+            ])
+            for _ in range(n_blocks):
+                layers.append(ResBlock(ch))
+            in_ch = ch
 
-            nn.Conv2d(64, feat_dim, 3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(feat_dim), nn.ReLU(inplace=True),
-            ResBlock(feat_dim),
-        )
+        self.net = nn.Sequential(*layers)
+        self.feat_dim = stage_channels[-1]
 
     def forward(self, x):
-        return self.net(x)  # (B, 128, 6, 6)
+        return self.net(x)  # (B, feat_dim, 6, 6)
 
 
 # ─── Correlation Module ───
@@ -72,8 +81,8 @@ class CorrelationModule(nn.Module):
     Takes two feature maps (goal, obs) and produces a correlation cue vector.
     """
 
-    def __init__(self, feat_h=6, feat_w=6, feat_dim=128, pyramid_levels=2,
-                 lookup_radius=1, cue_dim=256):
+    def __init__(self, feat_h=6, feat_w=6, feat_dim=512, pyramid_levels=2,
+                 lookup_radius=1, cue_dim=512):
         super().__init__()
         self.feat_h = feat_h
         self.feat_w = feat_w
@@ -83,13 +92,13 @@ class CorrelationModule(nn.Module):
 
         lookup_ch = (pyramid_levels + 1) * (self.k ** 2)
         self.fusion = nn.Sequential(
-            nn.Conv2d(lookup_ch, 64, 3, padding=1, bias=False),
+            nn.Conv2d(lookup_ch, 128, 3, padding=1, bias=False),
+            nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.Conv2d(128, 64, 3, padding=1, bias=False),
             nn.BatchNorm2d(64), nn.ReLU(inplace=True),
-            nn.Conv2d(64, 32, 3, padding=1, bias=False),
-            nn.BatchNorm2d(32), nn.ReLU(inplace=True),
         )
 
-        fused_size = 32 * feat_h * feat_w
+        fused_size = 64 * feat_h * feat_w
         self.fc = nn.Sequential(
             nn.Linear(fused_size, cue_dim),
             nn.ReLU(inplace=True),
@@ -165,16 +174,16 @@ class DepthDecoder(nn.Module):
     Only used during training — stripped for deployment.
     """
 
-    def __init__(self, feat_dim=128):
+    def __init__(self, feat_dim=512):
         super().__init__()
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(feat_dim, 64, 4, stride=2, padding=1),  # 6→12
+            nn.ConvTranspose2d(feat_dim, 128, 4, stride=2, padding=1),  # 6→12
+            nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+
+            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),       # 12→24
             nn.BatchNorm2d(64), nn.ReLU(inplace=True),
 
-            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),       # 12→24
-            nn.BatchNorm2d(32), nn.ReLU(inplace=True),
-
-            nn.ConvTranspose2d(32, 1, 4, stride=2, padding=1),        # 24→48
+            nn.ConvTranspose2d(64, 1, 4, stride=2, padding=1),         # 24→48
             nn.Sigmoid(),  # depth in [0, 1]
         )
 
@@ -187,12 +196,12 @@ class DepthDecoder(nn.Module):
 class PolicyNetwork(nn.Module):
     """Maps correlation cue → action logits."""
 
-    def __init__(self, cue_dim=256, hidden=128, num_actions=4):
+    def __init__(self, cue_dim=512, hidden=256, num_actions=4):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(cue_dim, hidden), nn.ReLU(inplace=True),
-            nn.Linear(hidden, 64), nn.ReLU(inplace=True),
-            nn.Linear(64, num_actions),
+            nn.Linear(hidden, 128), nn.ReLU(inplace=True),
+            nn.Linear(128, num_actions),
         )
 
     def forward(self, cue):
@@ -208,13 +217,13 @@ class QNetwork(nn.Module):
     returns scalar Q-value.
     """
 
-    def __init__(self, cue_dim=256, hidden=128, num_actions=4):
+    def __init__(self, cue_dim=512, hidden=256, num_actions=4):
         super().__init__()
         self.action_embed = nn.Embedding(num_actions, 32)
         self.net = nn.Sequential(
             nn.Linear(cue_dim + 32, hidden), nn.ReLU(inplace=True),
-            nn.Linear(hidden, 64), nn.ReLU(inplace=True),
-            nn.Linear(64, 1),
+            nn.Linear(hidden, 128), nn.ReLU(inplace=True),
+            nn.Linear(128, 1),
         )
 
     def forward(self, cue, actions):
@@ -237,12 +246,12 @@ class VNetwork(nn.Module):
     Takes correlation cue, returns scalar V-value.
     """
 
-    def __init__(self, cue_dim=256, hidden=128):
+    def __init__(self, cue_dim=512, hidden=256):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(cue_dim, hidden), nn.ReLU(inplace=True),
-            nn.Linear(hidden, 64), nn.ReLU(inplace=True),
-            nn.Linear(64, 1),
+            nn.Linear(hidden, 128), nn.ReLU(inplace=True),
+            nn.Linear(128, 1),
         )
 
     def forward(self, cue):
@@ -269,7 +278,7 @@ class TeacherModel(nn.Module):
     depth-aware features through the auxiliary loss.
     """
 
-    def __init__(self, feat_dim=128, cue_dim=256, num_actions=4,
+    def __init__(self, feat_dim=512, cue_dim=512, num_actions=4,
                  use_depth_head=True):
         super().__init__()
         self.encoder = SharedEncoder(feat_dim=feat_dim)

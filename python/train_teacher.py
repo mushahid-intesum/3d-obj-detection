@@ -28,8 +28,8 @@ CHECKPOINT_DIR  = "./checkpoints/teacher"
 DEVICE          = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Model
-FEAT_DIM        = 128       # encoder feature channels
-CUE_DIM         = 256       # correlation cue dimension
+FEAT_DIM        = 512       # encoder feature channels
+CUE_DIM         = 512       # correlation cue dimension
 NUM_ACTIONS     = 4         # forward, left, right, stop
 
 # IQL hyperparameters

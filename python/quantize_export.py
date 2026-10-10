@@ -34,8 +34,8 @@ OUTPUT_DIR          = "./export"
 DEVICE              = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Teacher config (must match)
-TEACHER_FEAT_DIM    = 128
-TEACHER_CUE_DIM     = 256
+TEACHER_FEAT_DIM    = 512
+TEACHER_CUE_DIM     = 512
 NUM_ACTIONS         = 4
 
 # QAT config

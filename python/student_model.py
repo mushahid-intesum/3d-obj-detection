@@ -17,20 +17,20 @@ import torch.nn.functional as F
 # ═══════════════════════════════════════════════
 
 # Encoder — 4-stage hierarchical (mirrors MicroDepthAnything)
-ENC_CHANNELS       = [64, 128, 320, 640]   # per-stage widths
-ENC_BLOCKS         = [2, 3, 3, 2]          # DSConv blocks per stage
-FEAT_DIM           = 640                   # final feature channel dim
-FEAT_SIZE          = 3                     # spatial output (3×3)
+ENC_CHANNELS       = [128, 256, 512, 1024]  # per-stage widths
+ENC_BLOCKS         = [2, 3, 4, 3]           # DSConv blocks per stage
+FEAT_DIM           = 1024                   # final feature channel dim
+FEAT_SIZE          = 3                      # spatial output (3×3)
 
 # Correlation
 CUE_DIM            = FEAT_SIZE ** 2 * FEAT_SIZE ** 2 + 2  # 9×9 + 2 = 83
 
 # Policy MLP
-POLICY_HIDDEN      = [512, 256, 128]       # hidden layer widths
-NUM_ACTIONS        = 4                     # F/B/L/R
+POLICY_HIDDEN      = [512, 256, 128]        # hidden layer widths
+NUM_ACTIONS        = 4                      # F/B/L/R
 
 # Distillation projector
-PROJ_DIM           = 256                   # teacher cue dimension
+PROJ_DIM           = 512                    # teacher cue dimension
 # ═══════════════════════════════════════════════
 
 

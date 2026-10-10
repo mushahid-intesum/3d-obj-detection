@@ -36,11 +36,14 @@ static const char *TAG = "mot_main";
 
 static void exploration_task(void *pvParam)
 {
-    ESP_LOGI(TAG, "Exploration loop started");
+    ESP_LOGI(TAG, "Step-and-stop exploration started (burst=%d ms)", STEP_BURST_MS);
 
     while (1) {
+        /* ── 1. Get next pink-noise action ── */
         uint8_t planned_action = explorer_next_action();
 
+        /* ── 2. SPI exchange: send planned action + heading to cam board.
+         *       Cam board runs depth guard during this window. ── */
         float heading = imu_get_heading();
         if (heading < 0.0f) heading = 0.0f;
 
@@ -54,25 +57,36 @@ static void exploration_task(void *pvParam)
         );
 
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "SPI receive timeout");
+            ESP_LOGW(TAG, "SPI receive timeout — skipping step");
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
 
+        /* ── 3. Apply obstacle override ── */
         uint8_t final_action = planned_action;
         if (obstacle_flag && final_action == ACTION_FORWARD) {
             final_action = ACTION_TURN_RIGHT;
             ESP_LOGW(TAG, "Obstacle override! FWD → RIGHT");
         }
 
+        /* ── 4. Execute action (blocking — 500ms burst or IMU turn) ── */
         motor_execute_action(final_action);
+
+        /* ── 5. Post-action settle: motors are now stopped.
+         *       Cam board captures the "result" frame during this window.
+         *       Update SPI response with final action + post-action heading. ── */
+        vTaskDelay(pdMS_TO_TICKS(50));   /* brief settle for vibration */
         spi_slave_set_response(final_action, imu_get_heading());
 
+        /* ── 6. Log ── */
         uint32_t step = explorer_get_step();
         if (step % 20 == 0) {
-            ESP_LOGI(TAG, "Step %lu: action=%d heading=%.1f obstacle=%d",
-                     (unsigned long)step, final_action, heading, obstacle_flag);
+            ESP_LOGI(TAG, "Step %lu: planned=%d final=%d heading=%.1f obstacle=%d",
+                     (unsigned long)step, planned_action, final_action,
+                     imu_get_heading(), obstacle_flag);
         }
+
+        /* No extra delay — action burst + SPI exchange already fills the cycle */
     }
 }
 
