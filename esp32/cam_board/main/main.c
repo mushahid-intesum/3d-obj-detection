@@ -87,6 +87,9 @@ static void collection_task(void *pvParam)
         uint8_t action_taken = ACTION_STOP;
         float heading_deg = 0.0f;
 
+        /* Brief delay to let motor board's SPI slave queue its transaction */
+        vTaskDelay(pdMS_TO_TICKS(10));
+
         esp_err_t spi_ret = spi_exchange_collection(
             obstacle_flag, &action_taken, &heading_deg
         );
