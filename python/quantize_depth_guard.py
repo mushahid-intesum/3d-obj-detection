@@ -42,7 +42,7 @@ NYU_CACHE_DIR      = "./data/nyu_depth_v2_cache"
 N_CALIBRATION      = 200         # Number of calibration samples for INT8
 
 # Model architecture (must match train_depth_guard.py)
-IMG_SIZE           = 48
+IMG_SIZE           = 256
 STAGE_CHANNELS     = [128, 256, 512, 1024]   # per-stage widths
 STAGE_BLOCKS       = [2, 4, 4, 3]          # DSConv blocks per stage
 HEAD_DIM           = 256   
@@ -287,7 +287,7 @@ def export_c_header(tflite_path, header_path):
         f.write(" * Trained on NYU Depth V2 (47K indoor images).\n")
         f.write(" * Quantized with ai-edge-quantizer (full INT8).\n")
         f.write(f" * Size: {len(data)} bytes ({len(data) / 1024:.1f} KB)\n")
-        f.write(" * Input:  1×48×48×3 INT8 image\n")
+        f.write(" * Input:  1×256×256×3 INT8 image\n")
         f.write(" * Output: 1 INT8 obstacle logit\n")
         f.write(" */\n")
         f.write("#ifndef DEPTH_GUARD_MODEL_H\n")

@@ -173,7 +173,7 @@ def export_onnx(student_fp32, output_dir):
 
     # Export encoder
     encoder_wrapper = EncoderWrapper(student_fp32.encoder)
-    dummy_img = torch.randn(1, 3, 48, 48)
+    dummy_img = torch.randn(1, 3, 256, 256)
     encoder_path = os.path.join(output_dir, "encoder.onnx")
     torch.onnx.export(
         encoder_wrapper, dummy_img, encoder_path,
@@ -386,12 +386,12 @@ def main():
 
     enc_ok = convert_to_tflite(encoder_onnx, encoder_tflite,
                                 calibration_data=calib_data,
-                                input_shape=(1, 3, 48, 48))
+                                input_shape=(1, 3, 256, 256))
     # Policy calibration: generate random cues
-    pol_calib = np.random.randn(CALIBRATION_SAMPLES, 83).astype(np.float32)
+    pol_calib = np.random.randn(CALIBRATION_SAMPLES, 258).astype(np.float32)
     pol_ok = convert_to_tflite(policy_onnx, policy_tflite,
                                 calibration_data=pol_calib,
-                                input_shape=(1, 83))
+                                input_shape=(1, 258))
 
     # Step 4: Generate C headers
     print("\n── Step 4: Generate C Headers ──")

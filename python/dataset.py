@@ -37,7 +37,7 @@ class OfflineNavDataset(Dataset):
     to avoid duplication.
     """
 
-    def __init__(self, dataset_dir, img_size=48, augment=True):
+    def __init__(self, dataset_dir, img_size=256, augment=True):
         """
         Args:
             dataset_dir: Path to offline_dataset/ (output of hindsight_relabel.py).

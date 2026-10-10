@@ -27,7 +27,7 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 #  Configuration — edit these constants directly
 # ═══════════════════════════════════════════════
 SOURCE           = "nyu"        # "nyu" or "mcu"
-DEPTH_MAP_SIZE   = 48           # Output depth map resolution (NxN)
+DEPTH_MAP_SIZE   = 256          # Output depth map resolution (NxN)
 MODEL_ID         = "depth-anything/Depth-Anything-V2-Small-hf"
 NYU_DATASET_ID   = "sayakpaul/nyu_depth_v2"
 NYU_CACHE_DIR    = "./data/nyu_depth_v2_cache"

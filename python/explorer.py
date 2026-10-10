@@ -32,7 +32,7 @@ OBSTACLE_THRESH_CM  = 12                    # ultrasonic override threshold
 # Protocol constants (must match wifi_stream.h)
 MAGIC = 0x494D4731
 HEADER_SIZE = 11
-IMG_W, IMG_H, IMG_CH = 48, 48, 3
+IMG_W, IMG_H, IMG_CH = 256, 256, 3
 
 # Actions: pink noise generates 0=forward, 1=left, 2=right
 # Mapped to firmware commands: F=NORTH, B=SOUTH, L=WEST, R=EAST, S=STAY

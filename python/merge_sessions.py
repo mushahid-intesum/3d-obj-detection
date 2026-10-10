@@ -31,7 +31,7 @@ from PIL import Image
 DATA_ROOT           = "./data"
 OUTPUT_DIR          = "./data/merged"
 MIN_SEGMENT_LENGTH  = 5       # discard segments shorter than this
-IMG_SIZE            = 48
+IMG_SIZE            = 256
 # ═══════════════════════════════════════════
 
 

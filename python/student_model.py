@@ -20,10 +20,11 @@ import torch.nn.functional as F
 ENC_CHANNELS       = [128, 256, 512, 1024]  # per-stage widths
 ENC_BLOCKS         = [2, 3, 4, 3]           # DSConv blocks per stage
 FEAT_DIM           = 1024                   # final feature channel dim
-FEAT_SIZE          = 3                      # spatial output (3×3)
+FEAT_SIZE          = 16                     # spatial output (16×16)
 
 # Correlation
-CUE_DIM            = FEAT_SIZE ** 2 * FEAT_SIZE ** 2 + 2  # 9×9 + 2 = 83
+CORR_POOL_SIZE     = 4                      # pool features to 4×4 before corr
+CUE_DIM            = CORR_POOL_SIZE ** 2 * CORR_POOL_SIZE ** 2 + 2  # 16×16 + 2 = 258
 
 # Policy MLP
 POLICY_HIDDEN      = [512, 256, 128]        # hidden layer widths
@@ -55,8 +56,8 @@ class TinyEncoder(nn.Module):
     """
     4-stage hierarchical encoder (MicroDepthAnything architecture).
 
-    Input:  (B, 3, 48, 48)
-    Output: (B, C3, 3, 3)
+    Input:  (B, 3, 256, 256)
+    Output: (B, C3, 16, 16)
 
     Uses depthwise-separable convolutions with configurable stage
     widths and block counts.
@@ -71,7 +72,7 @@ class TinyEncoder(nn.Module):
         c0, c1, c2, c3 = channels
         b0, b1, b2, b3 = blocks
 
-        # Stem — 48×48 → 24×24
+        # Stem — 256×256 → 128×128
         self.stem = nn.Sequential(
             nn.Conv2d(3, c0, 3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(c0),
@@ -79,9 +80,9 @@ class TinyEncoder(nn.Module):
         )
 
         # Hierarchical stages — each halves spatial resolution
-        self.stage1 = self._make_stage(c0, c1, b1)    # 24→12
-        self.stage2 = self._make_stage(c1, c2, b2)    # 12→6
-        self.stage3 = self._make_stage(c2, c3, b3)    # 6→3
+        self.stage1 = self._make_stage(c0, c1, b1)    # 128→64
+        self.stage2 = self._make_stage(c1, c2, b2)    # 64→32
+        self.stage3 = self._make_stage(c2, c3, b3)    # 32→16
 
     @staticmethod
     def _make_stage(in_ch, out_ch, n_blocks):
@@ -103,45 +104,50 @@ class SimplifiedCorrelation(nn.Module):
     """
     Simplified correlation for MCU: 9x9 cross-correlation + 2 L/R scores.
 
-    No pyramid, no conv fusion — just dot products implementable in plain C.
-    Output dim = feat_h² × feat_w² + 2 = 83 (for 3×3 features).
+    Output dim = feat_h² × feat_w² + 2 = 65538 is too large for 16×16.
+    Use pooled correlation: pool features to 4×4 before correlation.
+    Output dim = 4² × 4² + 2 = 258.
     """
 
-    def __init__(self, feat_dim=None, feat_h=None, feat_w=None):
+    def __init__(self, feat_dim=None, feat_h=None, feat_w=None, pool_size=4):
         super().__init__()
         self.feat_dim = feat_dim or FEAT_DIM
         self.feat_h = feat_h or FEAT_SIZE
         self.feat_w = feat_w or FEAT_SIZE
-        self.n_positions = self.feat_h * self.feat_w  # 9
+        self.pool_size = pool_size
+        self.n_positions = pool_size * pool_size  # 16
+        self.pool = nn.AdaptiveAvgPool2d(pool_size)
 
     def forward(self, f_goal, f_obs):
         """
         Args:
-            f_goal: (B, C, H, W)
+            f_goal: (B, C, H, W)  e.g. (B, 1024, 16, 16)
             f_obs:  (B, C, H, W)
         Returns:
-            cue: (B, 83)
+            cue: (B, 258)
         """
         B = f_goal.size(0)
+        ps = self.pool_size  # 4
 
-        # Flatten spatial: (B, C, N) → (B, N, C)
-        g = f_goal.view(B, self.feat_dim, -1).permute(0, 2, 1)
-        o = f_obs.view(B, self.feat_dim, -1).permute(0, 2, 1)
+        # Pool to fixed spatial size: (B, C, H, W) → (B, C, ps, ps)
+        g_pooled = self.pool(f_goal)  # (B, C, 4, 4)
+        o_pooled = self.pool(f_obs)   # (B, C, 4, 4)
+
+        # Flatten spatial: (B, C, ps²) → (B, ps², C)
+        g = g_pooled.view(B, self.feat_dim, -1).permute(0, 2, 1)
+        o = o_pooled.view(B, self.feat_dim, -1).permute(0, 2, 1)
 
         # L2 normalize
         g_norm = F.normalize(g, dim=-1)
         o_norm = F.normalize(o, dim=-1)
 
-        # NxN cross-correlation: (B, N, N)
+        # NxN cross-correlation: (B, ps², ps²)
         cross_corr = torch.bmm(g_norm, o_norm.permute(0, 2, 1))
-        cross_flat = cross_corr.reshape(B, self.n_positions ** 2)  # (B, 81)
+        cross_flat = cross_corr.reshape(B, self.n_positions ** 2)  # (B, 256)
 
-        # Left/Right similarity
-        # Left positions: col 0 → indices 0,3,6 in 3x3 grid
-        # Right positions: col 2 → indices 2,5,8
-        left_idx = [i * self.feat_w for i in range(self.feat_h)]
-        right_idx = [i * self.feat_w + (self.feat_w - 1)
-                     for i in range(self.feat_h)]
+        # Left/Right similarity (on pooled grid)
+        left_idx = [i * ps for i in range(ps)]
+        right_idx = [i * ps + (ps - 1) for i in range(ps)]
 
         g_left = g_norm[:, left_idx, :].mean(dim=1)   # (B, C)
         g_right = g_norm[:, right_idx, :].mean(dim=1)
@@ -153,7 +159,7 @@ class SimplifiedCorrelation(nn.Module):
             (g_right * o_right).sum(dim=-1),  # right similarity
         ], dim=-1)  # (B, 2)
 
-        # Concatenate: N² + 2
+        # Concatenate: ps⁴ + 2 = 258
         cue = torch.cat([cross_flat, lr_sim], dim=-1)
         return cue
 
@@ -162,7 +168,7 @@ class TinyPolicy(nn.Module):
     """
     Scaled MLP policy network.
 
-    Default: 83 → 512 → 256 → 128 → 4
+    Default: 258 → 512 → 256 → 128 → 4
     Configurable via hidden layer widths.
     """
 
@@ -268,8 +274,8 @@ if __name__ == "__main__":
 
     # Quick forward pass test
     model = StudentModel()
-    obs = torch.randn(2, 3, 48, 48)
-    goal = torch.randn(2, 3, 48, 48)
+    obs = torch.randn(2, 3, 256, 256)
+    goal = torch.randn(2, 3, 256, 256)
     logits = model(obs, goal)
     print(f"\nForward pass: obs {obs.shape} → logits {logits.shape}")
     print(f"Logits: {logits}")

@@ -3,7 +3,7 @@
 models.py — Depth-aware teacher model for ImageNav.
 
 Components:
-  - SharedEncoder:       ResNet-9 producing 6×6 feature maps
+  - SharedEncoder:       ResNet producing 32×32 feature maps
   - CorrelationModule:   RSRNav-style cross-correlation
   - DepthDecoder:        Auxiliary depth prediction head (training only)
   - TeacherModel:        Full pipeline: encoder → correlation → action + depth
@@ -39,8 +39,8 @@ class SharedEncoder(nn.Module):
     """
     Weight-shared ResNet encoder for both goal and observation images.
 
-    Input:  (B, 3, 48, 48) RGB image
-    Output: (B, feat_dim, 6, 6) feature map
+    Input:  (B, 3, 256, 256) RGB image
+    Output: (B, feat_dim, 32, 32) feature map
 
     Configurable stage widths and block depths.
     Default: [128, 256, 512] × [3, 4, 3] → ~21M params.
@@ -69,7 +69,7 @@ class SharedEncoder(nn.Module):
         self.feat_dim = stage_channels[-1]
 
     def forward(self, x):
-        return self.net(x)  # (B, feat_dim, 6, 6)
+        return self.net(x)  # (B, feat_dim, 32, 32)
 
 
 # ─── Correlation Module ───
@@ -81,7 +81,7 @@ class CorrelationModule(nn.Module):
     Takes two feature maps (goal, obs) and produces a correlation cue vector.
     """
 
-    def __init__(self, feat_h=6, feat_w=6, feat_dim=512, pyramid_levels=2,
+    def __init__(self, feat_h=32, feat_w=32, feat_dim=512, pyramid_levels=2,
                  lookup_radius=1, cue_dim=512):
         super().__init__()
         self.feat_h = feat_h
@@ -91,14 +91,16 @@ class CorrelationModule(nn.Module):
         self.pyramid_levels = pyramid_levels
 
         lookup_ch = (pyramid_levels + 1) * (self.k ** 2)
+        pool_size = 8  # pool fused correlation maps to 8×8
         self.fusion = nn.Sequential(
             nn.Conv2d(lookup_ch, 128, 3, padding=1, bias=False),
             nn.BatchNorm2d(128), nn.ReLU(inplace=True),
             nn.Conv2d(128, 64, 3, padding=1, bias=False),
             nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(pool_size),
         )
 
-        fused_size = 64 * feat_h * feat_w
+        fused_size = 64 * pool_size * pool_size  # 64 * 8 * 8 = 4096
         self.fc = nn.Sequential(
             nn.Linear(fused_size, cue_dim),
             nn.ReLU(inplace=True),
@@ -170,25 +172,25 @@ class DepthDecoder(nn.Module):
     """
     Lightweight depth prediction head.
 
-    Takes encoder feature maps (B, 128, 6, 6) and upsamples to (B, 1, 48, 48).
+    Takes encoder feature maps (B, 512, 32, 32) and upsamples to (B, 1, 256, 256).
     Only used during training — stripped for deployment.
     """
 
     def __init__(self, feat_dim=512):
         super().__init__()
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(feat_dim, 128, 4, stride=2, padding=1),  # 6→12
+            nn.ConvTranspose2d(feat_dim, 128, 4, stride=2, padding=1),  # 32→64
             nn.BatchNorm2d(128), nn.ReLU(inplace=True),
 
-            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),       # 12→24
+            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),       # 64→128
             nn.BatchNorm2d(64), nn.ReLU(inplace=True),
 
-            nn.ConvTranspose2d(64, 1, 4, stride=2, padding=1),         # 24→48
+            nn.ConvTranspose2d(64, 1, 4, stride=2, padding=1),         # 128→256
             nn.Sigmoid(),  # depth in [0, 1]
         )
 
     def forward(self, features):
-        return self.decoder(features)  # (B, 1, 48, 48)
+        return self.decoder(features)  # (B, 1, 256, 256)
 
 
 # ─── Policy Head ───
@@ -283,7 +285,7 @@ class TeacherModel(nn.Module):
         super().__init__()
         self.encoder = SharedEncoder(feat_dim=feat_dim)
         self.correlation = CorrelationModule(
-            feat_h=6, feat_w=6, feat_dim=feat_dim,
+            feat_h=32, feat_w=32, feat_dim=feat_dim,
             pyramid_levels=2, cue_dim=cue_dim,
         )
         self.policy = PolicyNetwork(cue_dim, num_actions=num_actions)
@@ -312,13 +314,13 @@ class TeacherModel(nn.Module):
     def forward(self, obs, goal, return_depth=False):
         """
         Args:
-            obs:  (B, 3, 48, 48) current observation
-            goal: (B, 3, 48, 48) goal image
+            obs:  (B, 3, 256, 256) current observation
+            goal: (B, 3, 256, 256) goal image
             return_depth: if True, also return depth prediction
 
         Returns:
             action_logits: (B, num_actions)
-            depth_pred:    (B, 1, 48, 48) if return_depth=True
+            depth_pred:    (B, 1, 256, 256) if return_depth=True
         """
         f_obs = self.encoder(obs)
         f_goal = self.encoder(goal)
