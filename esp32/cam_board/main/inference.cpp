@@ -70,13 +70,14 @@ esp_err_t depth_guard_init(void)
     }
 
     /* Register only the ops used by TinyDepthNet */
-    static tflite::MicroMutableOpResolver<8> resolver;
+    static tflite::MicroMutableOpResolver<9> resolver;
     resolver.AddConv2D();
     resolver.AddDepthwiseConv2D();
     resolver.AddFullyConnected();
     resolver.AddRelu();
     resolver.AddMean();          /* AdaptiveAvgPool → ReduceMean */
     resolver.AddReshape();       /* Flatten */
+    resolver.AddTranspose();     /* Channel reordering in quantized graph */
     resolver.AddQuantize();
     resolver.AddDequantize();
 

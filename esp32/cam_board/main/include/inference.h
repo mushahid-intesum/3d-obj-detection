@@ -29,9 +29,9 @@ extern "C" {
 /** Encoder feature output: 8×8×1024 = 65536 bytes. */
 #define ENCODER_FEAT_SIZE       (8 * 8 * 1024)
 
-/** TFLite Micro arena sizes. */
-#define DEPTH_GUARD_ARENA_SIZE  (128 * 1024)   /* 128 KB */
-#define ENCODER_ARENA_SIZE      (256 * 1024)   /* 256 KB */
+/** TFLite Micro arena sizes — allocated in PSRAM at runtime. */
+#define DEPTH_GUARD_ARENA_SIZE  (5632 * 1024)  /* 5.5 MB — 4M param model at 128×128 */
+#define ENCODER_ARENA_SIZE      (256 * 1024)   /* 256 KB — placeholder until model ready */
 
 /** Obstacle detection threshold on INT8 logit output.
  *  Corresponds to sigmoid(0) = 0.5 probability.
