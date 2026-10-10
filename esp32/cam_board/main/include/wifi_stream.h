@@ -18,10 +18,17 @@
 esp_err_t wifi_init_sta(void);
 
 /**
- * @brief Start a TCP server on the given port.
- * Blocks until a client connects.
+ * @brief Start a TCP server on the given port (non-blocking).
+ * Only binds and listens — does NOT block waiting for a client.
+ * Call stream_accept_start() afterwards to accept clients in the background.
  */
 esp_err_t stream_server_start(uint16_t port);
+
+/**
+ * @brief Start background task that accepts TCP clients.
+ * Clients can connect/disconnect at any time without affecting the main loop.
+ */
+void stream_accept_start(void);
 
 /**
  * @brief Send a JPEG frame + exploration metadata to the laptop.

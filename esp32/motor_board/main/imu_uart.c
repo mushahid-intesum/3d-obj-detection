@@ -35,6 +35,7 @@ static const char *TAG = "imu";
 /* Thread-safe heading storage */
 static volatile float s_heading = -1.0f;
 static volatile bool  s_ready   = false;
+static volatile uint32_t s_update_count = 0;
 
 /**
  * @brief Background task: reads UART lines and parses heading.
@@ -62,12 +63,18 @@ static void imu_reader_task(void *pvParam)
                     float h = strtof(&line[2], NULL);
                     if (h >= 0.0f && h < 360.0f) {
                         s_heading = h;
+                        s_update_count++;
                         if (!s_ready) {
                             valid_count++;
                             if (valid_count >= 5) {
                                 s_ready = true;
-                                ESP_LOGI(TAG, "IMU ready — heading: %.1f°", h);
+                                ESP_LOGI(TAG, "IMU ready -- heading: %.1f deg", h);
                             }
+                        }
+                        /* Periodic log to confirm UART data flow */
+                        if (s_update_count % 100 == 0) {
+                            ESP_LOGI(TAG, "IMU heading: %.1f deg (%lu updates)",
+                                     h, (unsigned long)s_update_count);
                         }
                     }
                 }

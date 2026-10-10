@@ -34,9 +34,13 @@ static const char *TAG = "mot_main";
  *  Collection Mode — pink noise exploration
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+static const char *ACTION_NAMES[] = {"FWD", "RIGHT", "LEFT", "STOP"};
+
 static void exploration_task(void *pvParam)
 {
     ESP_LOGI(TAG, "Step-and-stop exploration started (burst=%d ms)", STEP_BURST_MS);
+    ESP_LOGI(TAG, "IMU status: %s (heading=%.1f°)",
+             imu_is_ready() ? "READY" : "NOT READY", imu_get_heading());
 
     while (1) {
         /* ── 1. Get next pink-noise action ── */
@@ -44,10 +48,10 @@ static void exploration_task(void *pvParam)
 
         /* ── 2. SPI exchange: send planned action + heading to cam board.
          *       Cam board runs depth guard during this window. ── */
-        float heading = imu_get_heading();
-        if (heading < 0.0f) heading = 0.0f;
+        float heading_before = imu_get_heading();
+        if (heading_before < 0.0f) heading_before = 0.0f;
 
-        spi_slave_set_response(planned_action, heading);
+        spi_slave_set_response(planned_action, heading_before);
 
         uint8_t obstacle_flag = 0;
         uint8_t msg_type = 0;
@@ -57,7 +61,8 @@ static void exploration_task(void *pvParam)
         );
 
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "SPI receive timeout — skipping step");
+            ESP_LOGW(TAG, "SPI receive timeout — heading=%.1f° imu_ready=%d",
+                     imu_get_heading(), imu_is_ready());
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
@@ -70,21 +75,29 @@ static void exploration_task(void *pvParam)
         }
 
         /* ── 4. Execute action (blocking — 500ms burst or IMU turn) ── */
+        ESP_LOGI(TAG, "[pre]  heading=%.1f° action=%s",
+                 heading_before,
+                 final_action < 4 ? ACTION_NAMES[final_action] : "?");
+
         motor_execute_action(final_action);
 
         /* ── 5. Post-action settle: motors are now stopped.
          *       Cam board captures the "result" frame during this window.
          *       Update SPI response with final action + post-action heading. ── */
         vTaskDelay(pdMS_TO_TICKS(50));   /* brief settle for vibration */
-        spi_slave_set_response(final_action, imu_get_heading());
+        float heading_after = imu_get_heading();
+        spi_slave_set_response(final_action, heading_after);
 
-        /* ── 6. Log ── */
+        /* ── 6. Log heading change ── */
+        float delta = heading_after - heading_before;
+        if (delta > 180.0f) delta -= 360.0f;
+        if (delta < -180.0f) delta += 360.0f;
+
         uint32_t step = explorer_get_step();
-        if (step % 20 == 0) {
-            ESP_LOGI(TAG, "Step %lu: planned=%d final=%d heading=%.1f obstacle=%d",
-                     (unsigned long)step, planned_action, final_action,
-                     imu_get_heading(), obstacle_flag);
-        }
+        ESP_LOGI(TAG, "[post] step=%lu heading=%.1f° Δ=%.1f° action=%s obstacle=%d",
+                 (unsigned long)step, heading_after, delta,
+                 final_action < 4 ? ACTION_NAMES[final_action] : "?",
+                 obstacle_flag);
 
         /* No extra delay — action burst + SPI exchange already fills the cycle */
     }

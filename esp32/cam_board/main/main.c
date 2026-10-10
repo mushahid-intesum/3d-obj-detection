@@ -43,7 +43,7 @@ static void collection_task(void *pvParam)
     ESP_LOGI(TAG, "Collection loop started (step-and-stop, cycle=%d ms)",
              EXPLORE_CYCLE_MS);
 
-    while (stream_is_connected()) {
+    while (1) {
         /* ── Step-and-stop cycle ──
          *
          * The motor board executes actions in blocking 500ms bursts.
@@ -52,7 +52,7 @@ static void collection_task(void *pvParam)
          *   2. Run depth guard on the captured frame
          *   3. SPI exchange: send obstacle flag → receive action+heading
          *      Motor board then executes the action (500ms burst)
-         *   4. Stream frame + metadata to laptop
+         *   4. Stream frame + metadata to laptop (if connected)
          *   5. Wait for motor action to complete before next capture
          */
 
@@ -91,15 +91,15 @@ static void collection_task(void *pvParam)
             heading_deg = 0.0f;
         }
 
-        /* 4. Stream IMG4 to laptop */
-        esp_err_t stream_ret = stream_send_frame(
-            frame_id, timestep, action_taken, obstacle_flag,
-            heading_deg, fb->buf, fb->len
-        );
+        /* 4. Stream IMG4 to laptop (best-effort — skip if no client) */
+        if (stream_is_connected()) {
+            stream_send_frame(
+                frame_id, timestep, action_taken, obstacle_flag,
+                heading_deg, fb->buf, fb->len
+            );
+        }
 
         camera_release_frame(fb);
-
-        if (stream_ret != ESP_OK) break;
 
         frame_id++;
         timestep++;
@@ -108,9 +108,6 @@ static void collection_task(void *pvParam)
          *    before capturing the next frame */
         vTaskDelay(pdMS_TO_TICKS(EXPLORE_CYCLE_MS));
     }
-
-    ESP_LOGI(TAG, "Collection ended. Frames: %lu", (unsigned long)frame_id);
-    vTaskDelete(NULL);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -227,7 +224,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     /* Initialize camera */
-    ESP_LOGI(TAG, "[1/4] Initializing camera...");
+    ESP_LOGI(TAG, "[1/5] Initializing camera...");
     ESP_ERROR_CHECK(camera_init_jpeg());
 
     /* Initialize SPI master */
@@ -254,9 +251,12 @@ void app_main(void)
     ESP_LOGI(TAG, "Test mode complete — halting.");
     return;
 #else
-    /* Start TCP server */
+    /* Start TCP server (non-blocking — just bind + listen) */
     ESP_LOGI(TAG, "[5/5] Starting TCP server...");
     ESP_ERROR_CHECK(stream_server_start(STREAM_DEFAULT_PORT));
+
+    /* Start background task to accept TCP clients */
+    stream_accept_start();
 
     /* Try to initialize encoder — determines mode */
     bool nav_mode = false;
@@ -268,6 +268,7 @@ void app_main(void)
         ESP_LOGI(TAG, "No encoder model — COLLECTION mode");
     }
 
+    /* Start the main task IMMEDIATELY — no waiting for TCP client */
     if (nav_mode) {
         xTaskCreatePinnedToCore(
             navigation_task, "navigation",
@@ -280,7 +281,9 @@ void app_main(void)
         );
     }
 
-    ESP_LOGI(TAG, "Camera Board running (%s mode).",
+    ESP_LOGI(TAG, "Camera Board running (%s mode). "
+                   "TCP streaming available when client connects.",
              nav_mode ? "navigation" : "collection");
 #endif
 }
+

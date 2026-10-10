@@ -121,18 +121,49 @@ esp_err_t stream_server_start(uint16_t port)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "TCP server on port %d — waiting for client...", port);
-
-    struct sockaddr_in client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    s_client_sock = accept(s_server_sock, (struct sockaddr *)&client_addr, &addr_len);
-    if (s_client_sock < 0) {
-        ESP_LOGE(TAG, "Accept failed: %d", errno);
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Client connected!");
+    ESP_LOGI(TAG, "TCP server listening on port %d (non-blocking accept)", port);
     return ESP_OK;
+}
+
+/**
+ * @brief Background task that accepts TCP clients.
+ *
+ * Runs in a loop: wait for client → serve until disconnect → wait again.
+ * The collection/navigation loop is NOT blocked by this.
+ */
+static void stream_accept_task(void *pvParam)
+{
+    while (1) {
+        ESP_LOGI(TAG, "Waiting for TCP client...");
+
+        struct sockaddr_in client_addr;
+        socklen_t addr_len = sizeof(client_addr);
+        int client = accept(s_server_sock,
+                            (struct sockaddr *)&client_addr, &addr_len);
+        if (client < 0) {
+            ESP_LOGW(TAG, "Accept failed: %d, retrying...", errno);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        s_client_sock = client;
+        ESP_LOGI(TAG, "Client connected!");
+
+        /* Wait until client disconnects (s_client_sock set to -1 by send_all) */
+        while (s_client_sock >= 0) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+
+        ESP_LOGI(TAG, "Client disconnected, will accept new connection");
+    }
+}
+
+void stream_accept_start(void)
+{
+    xTaskCreatePinnedToCore(
+        stream_accept_task, "tcp_accept",
+        4096, NULL, 3, NULL, 0
+    );
 }
 
 static esp_err_t send_all(const void *buf, size_t len)
@@ -188,3 +219,4 @@ bool stream_is_connected(void)
 {
     return (s_client_sock >= 0);
 }
+
