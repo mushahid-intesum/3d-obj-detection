@@ -43,9 +43,9 @@ N_CALIBRATION      = 200         # Number of calibration samples for INT8
 
 # Model architecture (must match train_depth_guard.py)
 IMG_SIZE           = 48
-STAGE_CHANNELS     = [64, 128, 320, 640]
-STAGE_BLOCKS       = [2, 3, 3, 2]
-HEAD_DIM           = 128
+STAGE_CHANNELS     = [128, 256, 512, 1024]   # per-stage widths
+STAGE_BLOCKS       = [2, 4, 4, 3]          # DSConv blocks per stage
+HEAD_DIM           = 256   
 # ═══════════════════════════════════════════════
 
 
@@ -260,7 +260,7 @@ def quantize_to_int8(fp32_path, int8_path):
     result = qt.quantize(calibration_result=calibration_result)
 
     # export_model() is on the QuantizationResult object
-    result.export_model(int8_path)
+    result.export_model(int8_path, overwrite=True)
 
     size_kb = os.path.getsize(int8_path) / 1024
     print(f"  ✓ INT8 .tflite saved: {int8_path} ({size_kb:.1f} KB)")

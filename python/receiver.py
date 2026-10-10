@@ -36,7 +36,7 @@ except ImportError:
 # ═══════════════════════════════════════════════
 #  Configuration — edit these before running
 # ═══════════════════════════════════════════════
-ESP32_IP        = "192.168.1.100"   # Camera Board IP
+ESP32_IP        = "192.168.68.103"   # Camera Board IP
 ESP32_PORT      = 8888
 SESSION_NAME    = ""                # auto-generated if empty
 OUTPUT_DIR      = "data"            # base output directory

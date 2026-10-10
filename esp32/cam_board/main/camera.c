@@ -39,7 +39,7 @@ static esp_err_t camera_init_common(pixformat_t format)
         .ledc_timer    = LEDC_TIMER_0,
         .ledc_channel  = LEDC_CHANNEL_0,
         .pixel_format  = format,
-        .frame_size    = FRAMESIZE_QVGA,    /* 320×240 */
+        .frame_size    = FRAMESIZE_FHD,    /* 320×240 */
         .jpeg_quality  = CAM_JPEG_QUALITY,
         .fb_count      = CAM_FB_COUNT,
         .fb_location   = CAMERA_FB_IN_PSRAM,

@@ -1,17 +1,14 @@
 import os
 import glob
 
-import litert_torch
-from litert_torch.interpreter import Interpreter
-from ai_edge_quantizer import algorithm_manager, calibrator, qtyping, quantizer, recipe
-
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 from PIL import Image
+
+import time
 
 # ═══════════════════════════════════════════════
 #  Configuration
@@ -32,10 +29,16 @@ CENTER_STRIP_FRAC  = 0.4          # fraction of width treated as "ahead"
 OBSTACLE_THRESHOLD = 0.65         # DA-V2 disparity > this → blocked
 BALANCE_WEIGHT     = True
 
-# Model — 4-stage hierarchical encoder (mini Depth Anything)
-STAGE_CHANNELS     = [64, 128, 320, 640]   # per-stage widths
-STAGE_BLOCKS       = [2, 3, 3, 2]          # DSConv blocks per stage
-HEAD_DIM           = 128                   # MLP head hidden dim
+# Model — 4-stage hierarchical encoder (mini Depth Anything) (2M Params)
+# STAGE_CHANNELS     = [96, 192, 384, 768]   # per-stage widths
+# STAGE_BLOCKS       = [2, 3, 3, 3]          # DSConv blocks per stage
+# HEAD_DIM           = 256                   # MLP head hidden dim
+
+
+# (4M Params)
+STAGE_CHANNELS     = [128, 256, 512, 1024]   # per-stage widths
+STAGE_BLOCKS       = [2, 4, 4, 3]          # DSConv blocks per stage
+HEAD_DIM           = 256                   # MLP head hidden dim
 
 # Training
 LR                 = 3e-4
