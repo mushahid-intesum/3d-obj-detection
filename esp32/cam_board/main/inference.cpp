@@ -140,6 +140,10 @@ esp_err_t depth_guard_run(const uint8_t *img_rgb888, bool *is_blocked)
     int8_t logit = s_dg_output->data.int8[0];
     *is_blocked = (logit > OBSTACLE_LOGIT_THRESHOLD);
 
+    /* Debug: log raw logit every invocation to diagnose threshold */
+    ESP_LOGI(TAG, "DG logit=%d  blocked=%d (threshold=%d)",
+             logit, *is_blocked, OBSTACLE_LOGIT_THRESHOLD);
+
     return ESP_OK;
 }
 
