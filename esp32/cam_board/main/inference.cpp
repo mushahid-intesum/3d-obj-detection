@@ -70,7 +70,7 @@ esp_err_t depth_guard_init(void)
     }
 
     /* Register only the ops used by TinyDepthNet */
-    static tflite::MicroMutableOpResolver<10> resolver;
+    static tflite::MicroMutableOpResolver<11> resolver;
     resolver.AddConv2D();
     resolver.AddDepthwiseConv2D();
     resolver.AddFullyConnected();
@@ -81,13 +81,22 @@ esp_err_t depth_guard_init(void)
     resolver.AddQuantize();
     resolver.AddDequantize();
     resolver.AddPad();
+    resolver.AddSum();
+
+    ESP_LOGI(TAG, "Creating interpreter (arena=%d bytes in PSRAM)...",
+             DEPTH_GUARD_ARENA_SIZE);
 
     static tflite::MicroInterpreter interpreter(
         model, resolver, s_dg_arena, DEPTH_GUARD_ARENA_SIZE);
     s_dg_interpreter = &interpreter;
 
-    if (s_dg_interpreter->AllocateTensors() != kTfLiteOk) {
-        ESP_LOGE(TAG, "Depth guard tensor allocation failed!");
+    ESP_LOGI(TAG, "Allocating tensors...");
+    TfLiteStatus alloc_status = s_dg_interpreter->AllocateTensors();
+    if (alloc_status != kTfLiteOk) {
+        ESP_LOGE(TAG, "Depth guard tensor allocation failed! (status=%d)",
+                 alloc_status);
+        ESP_LOGE(TAG, "Arena: %d bytes, try increasing DEPTH_GUARD_ARENA_SIZE",
+                 DEPTH_GUARD_ARENA_SIZE);
         return ESP_FAIL;
     }
 
