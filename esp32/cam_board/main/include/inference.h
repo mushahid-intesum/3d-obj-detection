@@ -30,7 +30,7 @@ extern "C" {
 #define ENCODER_FEAT_SIZE       (6 * 6 * 1024)
 
 /** TFLite Micro arena sizes — allocated in PSRAM at runtime. */
-#define DEPTH_GUARD_ARENA_SIZE  (3584 * 1024)  /* 3.5 MB — 4M param model at 96×96 */
+#define DEPTH_GUARD_ARENA_SIZE  (4864 * 1024)  /* 4.75 MB — 4M param model at 96×96 */
 #define ENCODER_ARENA_SIZE      (256 * 1024)   /* 256 KB — placeholder until model ready */
 
 /** Obstacle detection threshold on INT8 logit output.
