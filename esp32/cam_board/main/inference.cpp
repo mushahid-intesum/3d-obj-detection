@@ -120,13 +120,28 @@ esp_err_t depth_guard_run(const uint8_t *img_rgb888, bool *is_blocked)
     }
 
     /*
-     * Quantize uint8 [0,255] → int8 [-128,127] for the model.
-     * INT8 quantization: q = (float_val / scale) + zero_point
-     * For typical image models: q = uint8_val - 128
+     * Quantize uint8 [0,255] → int8 using the model's INPUT quantization params.
+     * float_val = (q - zero_point) * scale
+     * So: q = (float_val / scale) + zero_point
+     *
+     * For image input normalized to [0,1]:
+     *   q = (uint8_val / 255.0 / scale) + zero_point
+     * For image input normalized to [-1,1]:
+     *   q = ((uint8_val / 127.5 - 1.0) / scale) + zero_point
+     *
+     * We use the simpler approach: assume [0,255] → [-128,127] mapping
+     * which matches the typical TFLite INT8 image convention.
      */
+    int8_t in_zp = s_dg_input->params.zero_point;
+    float in_scale = s_dg_input->params.scale;
     int8_t *input_data = s_dg_input->data.int8;
     for (int i = 0; i < DEPTH_GUARD_INPUT_SIZE; i++) {
-        input_data[i] = (int8_t)(img_rgb888[i] - 128);
+        /* Map [0,255] to float [0,1], then quantize using model's params */
+        float fval = img_rgb888[i] / 255.0f;
+        int32_t q = (int32_t)(fval / in_scale) + in_zp;
+        if (q > 127) q = 127;
+        if (q < -128) q = -128;
+        input_data[i] = (int8_t)q;
     }
 
     /* Run inference */
@@ -136,13 +151,19 @@ esp_err_t depth_guard_run(const uint8_t *img_rgb888, bool *is_blocked)
         return ESP_FAIL;
     }
 
-    /* Read output logit: positive → obstacle */
-    int8_t logit = s_dg_output->data.int8[0];
-    *is_blocked = (logit > OBSTACLE_LOGIT_THRESHOLD);
+    /* Dequantize output using the model's OUTPUT quantization params.
+     * float_logit = (int8_logit - zero_point) * scale
+     * Positive float_logit → obstacle detected. */
+    int8_t raw_logit = s_dg_output->data.int8[0];
+    int8_t out_zp = s_dg_output->params.zero_point;
+    float out_scale = s_dg_output->params.scale;
+    float float_logit = (raw_logit - out_zp) * out_scale;
 
-    /* Debug: log raw logit every invocation to diagnose threshold */
-    ESP_LOGI(TAG, "DG logit=%d  blocked=%d (threshold=%d)",
-             logit, *is_blocked, OBSTACLE_LOGIT_THRESHOLD);
+    *is_blocked = (float_logit > 0.0f);
+
+    /* Debug logging */
+    ESP_LOGI(TAG, "DG raw=%d zp=%d scale=%.4f → float=%.3f  blocked=%d",
+             raw_logit, out_zp, out_scale, float_logit, *is_blocked);
 
     return ESP_OK;
 }
