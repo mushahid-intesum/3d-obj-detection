@@ -16,7 +16,7 @@ import time
 NYU_CACHE_DIR      = "./data/nyu_depth_v2_cache"
 MCU_DATA_DIR       = "./data"
 OUTPUT_DIR         = "./checkpoints/depth_guard"
-IMG_SIZE           = 128
+IMG_SIZE           = 96
 DEVICE             = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Data source
@@ -90,10 +90,10 @@ class MicroDepthAnything(nn.Module):
         transformer blocks
       - Head: global pool → 2-layer MLP classifier
 
-    Input:  (B, 3, 128, 128)  RGB image
+    Input:  (B, 3, 96, 96)  RGB image
     Output: (B, 1)          obstacle logit (sigmoid → probability)
 
-    128×128 → stem[64²] → S1[32²] → S2[16²] → S3[8²] → GAP → MLP → 1
+    96×96 → stem[48²] → S1[24²] → S2[12²] → S3[6²] → GAP → MLP → 1
     """
 
     def __init__(self, channels=None, blocks=None, head_dim=None):
@@ -108,7 +108,7 @@ class MicroDepthAnything(nn.Module):
         b0, b1, b2, b3 = blocks
 
         # Stem — patch embedding (like DINOv2 patch projection)
-        # 128×128 → 64×64
+        # 96×96 → 48×48
         self.stem = nn.Sequential(
             nn.Conv2d(3, c0, 3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(c0),

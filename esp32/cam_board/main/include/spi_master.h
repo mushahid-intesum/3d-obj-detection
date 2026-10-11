@@ -56,7 +56,7 @@ esp_err_t spi_exchange_collection(uint8_t obstacle,
  * @brief Navigation mode: send encoder features + obstacle flag.
  *
  * @param obstacle   0=clear, 1=blocked
- * @param features   8×8×1024 = 65536 bytes of int8 encoder features.
+ * @param features   6×6×1024 = 36864 bytes of int8 encoder features.
  * @param out_action Receives the action Motor Board chose.
  * @param out_heading Receives IMU heading.
  * @return ESP_OK on success.

@@ -83,27 +83,34 @@ static int8_t cosine_sim_i8(const int8_t *a, const int8_t *b, int len)
 void correlation_pool_features(const int8_t *src, int8_t *dst)
 {
     /*
-     * Average-pool 8×8 → 4×4 with 2×2 kernel, stride 2.
-     * For each output position (dy, dx) and channel c:
-     *   dst[dy][dx][c] = mean(src[2*dy:2*dy+2][2*dx:2*dx+2][c])
+     * Adaptive average pool: 6×6 → 4×4.
+     * Matches PyTorch AdaptiveAvgPool2d(4) bin boundaries:
+     *   output[i] = mean(input[start_i : end_i])
+     *   start_i = floor(i * in_size / out_size)
+     *   end_i   = ceil((i+1) * in_size / out_size)
+     *
+     * For 6→4: bins are [0,2), [1,3), [3,5), [4,6) → sizes 2,2,2,2
      *
      * Layout: position-major [pos][ch], where pos = row * W + col.
      */
     for (int dy = 0; dy < CORR_FEAT_H; dy++) {
+        int sy_start = (dy * ENCODER_FEAT_H) / CORR_FEAT_H;
+        int sy_end   = ((dy + 1) * ENCODER_FEAT_H + CORR_FEAT_H - 1) / CORR_FEAT_H;
+
         for (int dx = 0; dx < CORR_FEAT_W; dx++) {
+            int sx_start = (dx * ENCODER_FEAT_W) / CORR_FEAT_W;
+            int sx_end   = ((dx + 1) * ENCODER_FEAT_W + CORR_FEAT_W - 1) / CORR_FEAT_W;
             int dst_pos = dy * CORR_FEAT_W + dx;
-            int sy = dy * 2;
-            int sx = dx * 2;
+            int count = (sy_end - sy_start) * (sx_end - sx_start);
 
             for (int c = 0; c < CORR_FEAT_CH; c++) {
                 int32_t sum = 0;
-                /* 2×2 pooling window */
-                sum += (int32_t)src[((sy + 0) * ENCODER_FEAT_W + (sx + 0)) * ENCODER_FEAT_CH + c];
-                sum += (int32_t)src[((sy + 0) * ENCODER_FEAT_W + (sx + 1)) * ENCODER_FEAT_CH + c];
-                sum += (int32_t)src[((sy + 1) * ENCODER_FEAT_W + (sx + 0)) * ENCODER_FEAT_CH + c];
-                sum += (int32_t)src[((sy + 1) * ENCODER_FEAT_W + (sx + 1)) * ENCODER_FEAT_CH + c];
-                /* Average (round towards zero) */
-                dst[dst_pos * CORR_FEAT_CH + c] = (int8_t)(sum / 4);
+                for (int sy = sy_start; sy < sy_end; sy++) {
+                    for (int sx = sx_start; sx < sx_end; sx++) {
+                        sum += (int32_t)src[(sy * ENCODER_FEAT_W + sx) * ENCODER_FEAT_CH + c];
+                    }
+                }
+                dst[dst_pos * CORR_FEAT_CH + c] = (int8_t)(sum / count);
             }
         }
     }

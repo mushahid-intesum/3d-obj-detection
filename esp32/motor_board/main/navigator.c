@@ -118,7 +118,7 @@ static void navigation_task(void *pvParam)
             continue;
         }
 
-        /* 3. Pool raw 8×8 features to 4×4 */
+        /* 3. Pool raw 6×6 features to 4×4 */
         correlation_pool_features(obs_features_raw, obs_features);
 
         /* 4. If no goal yet, use first frame as goal */

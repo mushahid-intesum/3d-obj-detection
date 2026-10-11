@@ -1,6 +1,6 @@
 /**
  * @file image_proc.c
- * @brief Area-averaged downscaling from 320x240 RGB565 to 128x128 RGB888.
+ * @brief Area-averaged downscaling from 320x240 RGB565 to 96x96 RGB888.
  */
 #include "image_proc.h"
 #include <string.h>
@@ -11,9 +11,9 @@ void image_downsample(const uint8_t *src_rgb565, int src_w, int src_h,
     /*
      * Area-averaging (box filter) downscale.
      *
-     * For a 320x240 → 128x128 mapping:
-     *   x scale = 320/128 = 2.5 pixels per output pixel
-     *   y scale = 240/128 = 1.875 pixels per output pixel
+     * For a 320x240 → 96x96 mapping:
+     *   x scale = 320/96 ≈ 3.33 pixels per output pixel
+     *   y scale = 240/96 = 2.5  pixels per output pixel
      *
      * We use integer bin boundaries by mapping each output pixel
      * to a rectangular region in the source image.

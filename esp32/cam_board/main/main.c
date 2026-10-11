@@ -122,7 +122,7 @@ static void collection_task(void *pvParam)
  *  Navigation Mode — encoder + SPI features
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/** Frame buffer for downscaled 128x128 image — allocated in PSRAM. */
+/** Frame buffer for downscaled 96x96 image — allocated in PSRAM. */
 static uint8_t *s_img_buf = NULL;
 
 static void navigation_task(void *pvParam)
@@ -146,10 +146,10 @@ static void navigation_task(void *pvParam)
             continue;
         }
 
-        /* 2. Downsample JPEG→RGB565→128x128 RGB888 */
+        /* 2. Downsample JPEG→RGB565→96x96 RGB888 */
         image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
 
-        /* 3. Run encoder: 128x128 RGB → 8×8×1024 features */
+        /* 3. Run encoder: 96x96 RGB → 6×6×1024 features */
         static int8_t *features = NULL;
         if (!features) {
             features = (int8_t *)heap_caps_malloc(ENCODER_FEAT_SIZE, MALLOC_CAP_SPIRAM);
