@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "motor.c"
+        "camera.c"
         "imu_uart.c"
         "explorer.c"
         "navigator.c"
