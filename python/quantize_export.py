@@ -278,17 +278,28 @@ def convert_to_tflite(onnx_path, output_path, calibration_data=None,
 # ────────────────────────────────────────────
 
 def tflite_to_c_header(tflite_path, header_path, array_name):
-    """Convert .tflite file to a C header with uint8 array."""
+    """Convert .tflite file to a C header for ESP32-S3 embedding.
+
+    Generates a header with:
+      - 16-byte aligned array (optimal for ESP32 DMA/flash)
+      - INFERENCE_HAS_MODEL flag so inference.cpp auto-detects the model
+    """
     with open(tflite_path, "rb") as f:
         data = f.read()
 
     with open(header_path, "w") as f:
         f.write(f"/* Auto-generated from {os.path.basename(tflite_path)} */\n")
+        f.write(f"/* Size: {len(data)} bytes ({len(data)/1024:.1f} KB) */\n")
         f.write(f"#ifndef {array_name.upper()}_H\n")
         f.write(f"#define {array_name.upper()}_H\n\n")
-        f.write(f"#include <stdint.h>\n\n")
+        f.write(f"#include <stdint.h>\n")
+        f.write(f"#include <stdalign.h>\n\n")
+        f.write(f"/* Enable model in inference.cpp */\n")
+        f.write(f"#ifndef INFERENCE_HAS_MODEL\n")
+        f.write(f"#define INFERENCE_HAS_MODEL 1\n")
+        f.write(f"#endif\n\n")
         f.write(f"const unsigned int {array_name}_len = {len(data)};\n")
-        f.write(f"alignas(8) const uint8_t {array_name}[] = {{\n")
+        f.write(f"alignas(16) const uint8_t {array_name}[] = {{\n")
 
         # Write 16 bytes per line
         for i in range(0, len(data), 16):
@@ -299,7 +310,7 @@ def tflite_to_c_header(tflite_path, header_path, array_name):
         f.write(f"}};\n\n")
         f.write(f"#endif /* {array_name.upper()}_H */\n")
 
-    print(f"[OK] C header: {header_path} ({len(data)} bytes)")
+    print(f"[OK] C header: {header_path} ({len(data)} bytes, {len(data)/1024:.1f} KB)")
 
 
 # ────────────────────────────────────────────
@@ -394,9 +405,8 @@ def main():
     enc_ok = convert_to_tflite(encoder_onnx, encoder_tflite,
                                 calibration_data=calib_data,
                                 input_shape=(1, 3, 96, 96))
-    # Policy calibration: generate random cues
-    # Policy calibration: generate random cues (CUE_DIM = 259 with sonar)
-    from student_model import CUE_DIM
+    # Policy calibration: random cues (CUE_DIM = 259 = 258 corr + 1 sonar)
+    from student_model import CUE_DIM, CORR_FLAT_DIM
     pol_calib = np.random.randn(CALIBRATION_SAMPLES, CUE_DIM).astype(np.float32)
     pol_ok = convert_to_tflite(policy_onnx, policy_tflite,
                                 calibration_data=pol_calib,
@@ -432,9 +442,18 @@ def main():
     if enc_ok and pol_ok:
         enc_size = os.path.getsize(encoder_tflite) / 1024
         pol_size = os.path.getsize(policy_tflite) / 1024
-        print(f"  Encoder: {enc_size:.1f} KB")
-        print(f"  Policy:  {pol_size:.1f} KB")
+        print(f"  Encoder: {enc_size:.1f} KB (input: 1×3×96×96 INT8)")
+        print(f"  Policy:  {pol_size:.1f} KB (input: 1×{CUE_DIM} INT8)")
         print(f"  Total:   {enc_size + pol_size:.1f} KB")
+        print(f"")
+        print(f"  Tensor dimensions (verify against inference.cpp):")
+        print(f"    FEAT_DIM={student_export.encoder.net[-1].pw.out_channels}")
+        print(f"    CORR_FLAT_DIM={CORR_FLAT_DIM}  CUE_DIM={CUE_DIM}")
+        print(f"")
+        print(f"  Deployment:")
+        print(f"    1. Copy {esp32_model_dir}/*.h → esp32/motor_board/main/include/")
+        print(f"    2. Headers auto-set INFERENCE_HAS_MODEL=1")
+        print(f"    3. idf.py build && idf.py flash")
     else:
         print(f"  ONNX models exported. Manual TFLite conversion needed.")
         print(f"  See: {OUTPUT_DIR}/encoder.onnx, policy.onnx")
