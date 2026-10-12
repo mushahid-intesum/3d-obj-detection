@@ -14,8 +14,11 @@
 #include "motor.h"
 #include "imu_uart.h"
 #include "explorer.h"
-#include "spi_slave.h"
 #include "navigator.h"
+
+#include "camera.h"
+#include "wifi_stream.h"
+#include "image_proc.h"
 
 #include "inference.h"
 
@@ -28,6 +31,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <stdlib.h> // Required for rand() and srand()
+#include <time.h> 
+
 static const char *TAG = "mot_main";
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -36,42 +42,51 @@ static const char *TAG = "mot_main";
 
 static const char *ACTION_NAMES[] = {"FWD", "RIGHT", "LEFT", "STOP"};
 
+static int get_random_number() {
+    srand(time(NULL));
+
+    int min = 1;
+    int max = 100;
+    
+    return (rand() % (max - min + 1)) + min;
+}
+
 static void exploration_task(void *pvParam)
 {
     ESP_LOGI(TAG, "Step-and-stop exploration started (burst=%d ms)", STEP_BURST_MS);
     ESP_LOGI(TAG, "IMU status: %s (heading=%.1f°)",
              imu_is_ready() ? "READY" : "NOT READY", imu_get_heading());
 
+    uint32_t frame_id = 0;
+    uint32_t timestep = 0;
+
+    ESP_LOGI(TAG, "Collection loop started (step-and-stop, cycle=%d ms)",
+             EXPLORE_CYCLE_MS);
+
     while (1) {
         /* ── 1. Get next pink-noise action ── */
         uint8_t planned_action = explorer_next_action();
 
-        /* ── 2. SPI exchange: send planned action + heading to cam board.
-         *       Cam board runs depth guard during this window. ── */
         float heading_before = imu_get_heading();
         if (heading_before < 0.0f) heading_before = 0.0f;
 
-        spi_slave_set_response(planned_action, heading_before);
-
+        /* 2. Depth guard — run obstacle detector on downsampled frame */
         uint8_t obstacle_flag = 0;
-        uint8_t msg_type = 0;
-
-        esp_err_t ret = spi_slave_receive(
-            &obstacle_flag, &msg_type, NULL, 2000
-        );
-
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "SPI receive timeout — heading=%.1f° imu_ready=%d",
-                     imu_get_heading(), imu_is_ready());
-            vTaskDelay(pdMS_TO_TICKS(500));
-            continue;
-        }
+        // TODO: Obstacle code via supersonic
 
         /* ── 3. Apply obstacle override ── */
         uint8_t final_action = planned_action;
         if (obstacle_flag && final_action == ACTION_FORWARD) {
-            final_action = ACTION_TURN_RIGHT;
-            ESP_LOGW(TAG, "Obstacle override! FWD → RIGHT");
+
+            int coinFlip = get_random_number();
+
+            if (coinFlip > 50) {
+                final_action = ACTION_TURN_RIGHT;
+            } else {
+                final_action = ACTION_TURN_LEFT;
+            }
+
+            ESP_LOGW(TAG, "Obstacle override!");
         }
 
         /* ── 4. Execute action (blocking — 500ms burst or IMU turn) ── */
@@ -86,7 +101,6 @@ static void exploration_task(void *pvParam)
          *       Update SPI response with final action + post-action heading. ── */
         vTaskDelay(pdMS_TO_TICKS(50));   /* brief settle for vibration */
         float heading_after = imu_get_heading();
-        spi_slave_set_response(final_action, heading_after);
 
         /* ── 6. Log heading change ── */
         float delta = heading_after - heading_before;
@@ -98,6 +112,33 @@ static void exploration_task(void *pvParam)
                  (unsigned long)step, heading_after, delta,
                  final_action < 4 ? ACTION_NAMES[final_action] : "?",
                  obstacle_flag);
+
+        camera_fb_t *fb = camera_capture_frame();
+        if (!fb) {
+            ESP_LOGW(TAG, "Frame capture failed, skipping");
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        uint8_t action_taken = ACTION_STOP;
+        float heading_deg = 0.0f;
+
+        /* 4. Stream IMG4 to laptop (best-effort — skip if no client) */
+        if (stream_is_connected()) {
+            stream_send_frame(
+                frame_id, timestep, action_taken, obstacle_flag,
+                heading_deg, fb->buf, fb->len
+            );
+        }
+
+        camera_release_frame(fb);
+
+        frame_id++;
+        timestep++;
+
+        /* 5. Wait for motor action to complete (~500ms burst + settle)
+         *    before capturing the next frame */
+        vTaskDelay(pdMS_TO_TICKS(EXPLORE_CYCLE_MS));
 
         /* No extra delay — action burst + SPI exchange already fills the cycle */
     }
@@ -122,6 +163,9 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    ESP_LOGI(TAG, "[1/5] Initializing camera...");
+    ESP_ERROR_CHECK(camera_init_jpeg());
+
     /* Initialize motor driver */
     ESP_LOGI(TAG, "[1/4] Initializing motors...");
     ESP_ERROR_CHECK(motor_init());
@@ -130,9 +174,12 @@ void app_main(void)
     ESP_LOGI(TAG, "[2/4] Initializing IMU UART...");
     ESP_ERROR_CHECK(imu_init());
 
-    /* Initialize SPI slave */
-    ESP_LOGI(TAG, "[3/4] Initializing SPI slave...");
-    ESP_ERROR_CHECK(spi_slave_init());
+    /* Initialize Supersonic */
+    ESP_LOGI(TAG, "[3/4] Initializing Supersonic...");
+    ESP_ERROR_CHECK(supersonic_init());
+
+    ESP_LOGI(TAG, "[4/5] Connecting to WiFi...");
+    ESP_ERROR_CHECK(wifi_init_sta());
 
 #if defined(TEST_MODE) && TEST_MODE
     /* ── TEST MODE: connect to test server instead of normal operation ── */
@@ -150,6 +197,11 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "No policy model — COLLECTION mode");
     }
+
+    ESP_LOGI(TAG, "[5/5] Starting TCP server...");
+    ESP_ERROR_CHECK(stream_server_start(STREAM_DEFAULT_PORT));
+
+    stream_accept_start();
 
     if (nav_mode) {
         /* Navigation mode — skip explorer, use navigator */

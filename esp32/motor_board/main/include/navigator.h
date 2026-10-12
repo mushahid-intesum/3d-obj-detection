@@ -3,7 +3,7 @@
  * @brief Autonomous image-goal navigation on Motor Board.
  *
  * In navigation mode:
- *   1. Receives encoder features from Camera Board via SPI
+ *   1. Receives encoder features from Camera
  *   2. Correlates with cached goal features (plain C int8)
  *   3. Runs policy MLP to select action
  *   4. Applies safety override if obstacle detected

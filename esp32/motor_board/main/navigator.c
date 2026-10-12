@@ -2,11 +2,11 @@
  * @file navigator.c
  * @brief Autonomous navigation loop on Motor Board.
  *
- * Core loop (SPI-slave-driven):
+ * Core loop (camera driver):
  *   1. Cache goal features (from first frame or NVS)
  *   2. Per step:
- *      a. Set SPI response with previous action + heading
- *      b. Wait for SPI transaction → receive obs features + obstacle flag
+ *      a. Get camera data
+ *      b. Get obstacle data from supersonic
  *      c. Pool obs features 8×8 → 4×4
  *      d. Correlate obs with goal → 258-dim cue
  *      e. Run policy → action logits → argmax
@@ -16,10 +16,12 @@
 #include "navigator.h"
 #include "inference.h"
 #include "correlation.h"
-#include "spi_slave.h"
 #include "motor.h"
 #include "imu_uart.h"
 #include "config.h"
+
+#include "camera.h"
+#include "image_proc.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -35,6 +37,7 @@ static const char *TAG = "navigator";
 
 /** Cached goal features (pooled 4×4×1024) — allocated in PSRAM. */
 static int8_t *s_goal_features = NULL;
+static uint8_t *s_img_buf = NULL;
 
 static const char *ACTION_NAMES[] = {"FWD", "RIGHT", "LEFT", "STOP"};
 
@@ -79,6 +82,11 @@ static void navigation_task(void *pvParam)
     int8_t *corr_cue = (int8_t *)heap_caps_malloc(CORR_CUE_SIZE, MALLOC_CAP_SPIRAM);
     int8_t action_logits[4];
 
+    if (!s_img_buf) {
+        s_img_buf = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
+        assert(s_img_buf && "Failed to alloc s_img_buf in PSRAM");
+    }
+
     if (!s_goal_features || !obs_features_raw || !obs_features || !corr_cue) {
         ESP_LOGE(TAG, "Failed to allocate nav buffers in PSRAM!");
         vTaskDelete(NULL);
@@ -87,6 +95,8 @@ static void navigation_task(void *pvParam)
 
     int step = 0;
     uint8_t last_action = ACTION_STOP;
+    uint32_t frame_id = 0;
+    int nav_steps = 0;
 
     while (step < NAV_MAX_STEPS) {
         int64_t t_start = esp_timer_get_time();
@@ -94,29 +104,31 @@ static void navigation_task(void *pvParam)
         /* 1. Prepare SPI response (from last step) */
         float heading = imu_get_heading();
         if (heading < 0.0f) heading = 0.0f;
-        spi_slave_set_response(last_action, heading);
 
-        /* 2. Wait for SPI transaction from Camera Board
-         *    Receives: obstacle_flag + 288 bytes of encoder features */
         uint8_t obstacle_flag = 0;
         uint8_t msg_type = 0;
 
-        err = spi_slave_receive(
-            &obstacle_flag, &msg_type, obs_features_raw, 2000
-        );
-
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "SPI timeout — Camera Board offline?");
-            vTaskDelay(pdMS_TO_TICKS(500));
-            continue;
+        /* Allocate image buffer in PSRAM */
+        if (!s_img_buf) {
+            s_img_buf = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
+            assert(s_img_buf && "Failed to alloc s_img_buf in PSRAM");
         }
 
-        /* Verify we got nav features (msg_type == 1) */
-        if (msg_type != 1) {
-            ESP_LOGW(TAG, "Expected nav features (msg_type=1), got %d", msg_type);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            continue;
+        // Get Images from Camera
+        camera_fb_t *fb = camera_capture_frame();
+
+        *obs_features_raw = NULL;
+        if (!obs_features_raw) {
+            obs_features_raw = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
+            assert(obs_features_raw && "Failed to alloc dg_img in PSRAM");
         }
+        image_downsample(fb->buf, fb->width, fb->height, obs_features_raw);
+
+        // TODO: Obstacle avoidance via supersonic
+
+
+        ESP_LOGI(TAG, "Navigation ended after %d steps", nav_steps);
+        vTaskDelete(NULL);
 
         /* 3. Pool raw 6×6 features to 4×4 */
         correlation_pool_features(obs_features_raw, obs_features);
