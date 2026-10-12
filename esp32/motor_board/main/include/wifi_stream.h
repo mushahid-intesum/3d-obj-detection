@@ -1,6 +1,6 @@
 /**
  * @file wifi_stream.h
- * @brief WiFi station mode and TCP streaming (IMG4 protocol).
+ * @brief WiFi station mode and TCP streaming (IMG5 protocol).
  *
  * Streams JPEG frames with exploration metadata to the laptop.
  */
@@ -31,23 +31,24 @@ esp_err_t stream_server_start(uint16_t port);
 void stream_accept_start(void);
 
 /**
- * @brief Send a JPEG frame + exploration metadata to the laptop.
+ * @brief Send a JPEG frame + sensor metadata to the laptop.
  *
- * Packet format (v4 — free exploration):
- *   [0..3]   magic:        0x494D4734 ("IMG4")
- *   [4..7]   frame_id      (uint32, LE, monotonic)
- *   [8..11]  timestep      (uint32, LE, index within session)
- *   [12]     action_taken  (uint8, 0=FWD, 1=TURN_R, 2=TURN_L, 3=STOP)
- *   [13]     depth_blocked (uint8, 0=clear, 1=blocked)
- *   [14..17] heading_deg   (float32, LE, 0-360 from IMU)
- *   [18..21] jpeg_len      (uint32, LE)
- *   [22..N]  jpeg_data     (variable length)
+ * Packet format (v5 — sonar + IMU):
+ *   [0..3]   magic:          0x494D4735 ("IMG5")
+ *   [4..7]   frame_id        (uint32, LE, monotonic)
+ *   [8..11]  timestep        (uint32, LE, index within session)
+ *   [12]     action_taken    (uint8, 0=FWD, 1=TURN_R, 2=TURN_L, 3=STOP)
+ *   [13]     sonar_blocked   (uint8, 0=clear, 1=blocked)
+ *   [14..17] sonar_cm        (float32, LE, raw distance in cm)
+ *   [18..21] heading_deg     (float32, LE, 0-360 from IMU)
+ *   [22..25] jpeg_len        (uint32, LE)
+ *   [26..N]  jpeg_data       (variable length)
  *
  * @return ESP_OK on success, ESP_FAIL if client disconnected.
  */
 esp_err_t stream_send_frame(uint32_t frame_id, uint32_t timestep,
-                            uint8_t action_taken, uint8_t depth_blocked,
-                            float heading_deg,
+                            uint8_t action_taken, uint8_t sonar_blocked,
+                            float sonar_cm, float heading_deg,
                             const uint8_t *jpeg_buf, uint32_t jpeg_len);
 
 /**
@@ -55,7 +56,10 @@ esp_err_t stream_send_frame(uint32_t frame_id, uint32_t timestep,
  */
 bool stream_is_connected(void);
 
-/** Packet magic number "IMG4" (v4 — free exploration) */
-#define STREAM_MAGIC  0x494D4734
+/** Packet magic number "IMG5" (v5 — sonar + IMU) */
+#define STREAM_MAGIC  0x494D4735
+
+/** IMG5 header size in bytes. */
+#define STREAM_HEADER_SIZE  26
 
 #endif /* WIFI_STREAM_H */

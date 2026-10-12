@@ -63,9 +63,13 @@
  *  Arduino IMU (UART1)
  *
  *  Arduino Nano 33 BLE Rev2 sends "H:<heading>\n" at 50Hz.
- *  Wiring: Arduino TX (D0) → ESP32 GPIO 13, GND → GND.
+ *  Wiring: Arduino TX (D0) → ESP32 GPIO, GND → GND.
+ *
+ *  WARNING: IMU_UART_RX_PIN must NOT conflict with camera pins.
+ *  GPIO 13 is currently used by CAM_PIN_PCLK above — reassign one
+ *  of them before flashing!
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define IMU_UART_RX_PIN   13
+#define IMU_UART_RX_PIN   13    /* FIXME: conflicts with CAM_PIN_PCLK! */
 #define IMU_UART_TX_PIN   21
 
 /* ═══════════════════════════════════════════════════════════════════════════

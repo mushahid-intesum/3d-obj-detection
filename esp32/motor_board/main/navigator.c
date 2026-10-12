@@ -21,6 +21,7 @@
 #include "camera.h"
 #include "image_proc.h"
 #include "wifi_stream.h"
+#include "sonar.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -43,10 +44,6 @@ static uint8_t *s_goal_img = NULL;
 
 static const char *ACTION_NAMES[] = {"FWD", "RIGHT", "LEFT", "STOP"};
 
-/* Forward declaration for sonar — will be in sonar.h after Phase 1B */
-extern float sonar_get_distance_cm(void);
-extern bool  sonar_is_blocked(void);
-
 /**
  * @brief Get a random turn direction for obstacle override.
  */
@@ -61,14 +58,7 @@ static uint8_t random_turn(void)
 static void navigation_task(void *pvParam)
 {
     nav_goal_mode_t mode = (nav_goal_mode_t)(uintptr_t)pvParam;
-
-    /* Initialize policy inference */
-    esp_err_t err = inference_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Policy init failed (0x%x) — no model embedded?", err);
-        vTaskDelete(NULL);
-        return;
-    }
+    esp_err_t err;
 
     /* Allocate image buffers in PSRAM */
     if (!s_img_buf) {
@@ -120,7 +110,15 @@ static void navigation_task(void *pvParam)
             continue;
         }
 
-        /* 2. Downsample to 96×96 RGB888 */
+        /* 2. Downsample to 96×96 RGB888
+         *
+         * NOTE: Camera is initialized in JPEG mode for streaming.
+         * For navigation, we need RGB565 input for image_downsample().
+         * TODO: Either switch camera to RGB565 mode before navigation,
+         *       or decode JPEG to RGB on-chip (more expensive).
+         *       For now, this assumes camera has been re-initialized
+         *       in RGB mode before navigator_start() is called.
+         */
         image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
 
         /* 3. Read sonar + IMU */
@@ -167,7 +165,7 @@ static void navigation_task(void *pvParam)
             stream_send_frame(
                 frame_id, (uint32_t)step, action,
                 sonar_blocked ? 1 : 0,
-                heading, fb->buf, fb->len
+                sonar_cm, heading, fb->buf, fb->len
             );
         }
         camera_release_frame(fb);

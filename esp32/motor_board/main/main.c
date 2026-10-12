@@ -22,6 +22,8 @@
 
 #include "inference.h"
 
+#include "sonar.h"
+
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -31,11 +33,6 @@
 #include <time.h>
 
 static const char *TAG = "main";
-
-/* Forward declaration — sonar driver (Phase 1B) */
-extern esp_err_t sonar_init(void);
-extern float     sonar_get_distance_cm(void);
-extern bool      sonar_is_blocked(void);
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Collection Mode — pink noise exploration
@@ -112,7 +109,7 @@ static void exploration_task(void *pvParam)
         if (stream_is_connected()) {
             stream_send_frame(
                 frame_id, timestep, final_action, sonar_blocked,
-                heading_after, fb->buf, fb->len
+                sonar_cm, heading_after, fb->buf, fb->len
             );
         }
 

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-receiver.py — TCP client for free exploration data collection (IMG4 protocol).
+receiver.py — TCP client for free exploration data collection (IMG5 protocol).
 
-Connects to Camera Board ESP32-S3, receives IMG4 packets containing:
-  - JPEG frame (captured by camera)
-  - action_taken (from Motor Board via SPI)
-  - depth_blocked (from depth guard)
-  - heading_deg (from IMU via Motor Board)
+Connects to ESP32-S3 single board, receives IMG5 packets containing:
+  - JPEG frame (captured by OV3660 camera)
+  - action_taken (from pink noise explorer / policy)
+  - sonar_blocked (from HC-SR04 ultrasonic sensor)
+  - sonar_cm (raw distance in cm)
+  - heading_deg (from IMU via Arduino UART)
   - timestep (session-local index)
 
 Saves:
@@ -36,7 +37,7 @@ except ImportError:
 # ═══════════════════════════════════════════════
 #  Configuration — edit these before running
 # ═══════════════════════════════════════════════
-ESP32_IP        = "192.168.68.101"   # Camera Board IP
+ESP32_IP        = "192.168.68.101"   # ESP32-S3 board IP
 ESP32_PORT      = 8888
 SESSION_NAME    = ""                # auto-generated if empty
 OUTPUT_DIR      = "data"            # base output directory
@@ -44,9 +45,9 @@ IMG_SIZE        = 96                # resize to NxN
 SHOW_PREVIEW    = True              # live OpenCV preview
 # ═══════════════════════════════════════════════
 
-# IMG4 protocol (must match wifi_stream.h)
-MAGIC = 0x494D4734           # "IMG4"
-HEADER_SIZE = 22             # 4+4+4+1+1+4+4
+# IMG5 protocol (must match wifi_stream.h)
+MAGIC = 0x494D4735           # "IMG5"
+HEADER_SIZE = 26             # 4+4+4+1+1+4+4+4
 
 ACTION_NAMES = ["FWD", "RIGHT", "LEFT", "STOP"]
 
@@ -98,11 +99,11 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
     override_count = 0
 
     while True:
-        # ── Receive IMG4 header (22 bytes) ──
+        # ── Receive IMG5 header (26 bytes) ──
         header = recv_exact(sock, HEADER_SIZE)
         (magic, frame_id, timestep, action_taken,
-         depth_blocked, heading_deg, jpeg_len) = \
-            struct.unpack("<IIIBBfI", header)
+         sonar_blocked, sonar_cm, heading_deg, jpeg_len) = \
+            struct.unpack("<IIIBBffI", header)
 
         if magic != MAGIC:
             print(f"  [WARN] Bad magic 0x{magic:08X}, resync...")
@@ -126,14 +127,15 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
             "frame": filename,
             "action": int(action_taken),
             "heading": round(float(heading_deg), 2),
-            "blocked": bool(depth_blocked),
+            "sonar_cm": round(float(sonar_cm), 1),
+            "blocked": bool(sonar_blocked),
             "ts": round(time.time(), 3),
         }
         traj_file.write(json.dumps(entry) + "\n")
         traj_file.flush()
 
         # Track overrides
-        if depth_blocked:
+        if sonar_blocked:
             override_count += 1
 
         frame_count += 1
@@ -144,7 +146,8 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
             print(f"  [{frame_count:>6}] "
                   f"act={action_str:<5} "
                   f"hdg={heading_deg:6.1f}° "
-                  f"blk={depth_blocked} "
+                  f"sonar={sonar_cm:5.1f}cm "
+                  f"blk={sonar_blocked} "
                   f"({override_count} overrides)")
 
         # ── Live preview ──
@@ -156,12 +159,12 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
 
             action_str = ACTION_NAMES[action_taken] if action_taken < 4 else "?"
             label = (f"Step:{frame_count} Act:{action_str} "
-                     f"Hdg:{heading_deg:.0f}")
-            color = (0, 0, 255) if depth_blocked else (0, 255, 0)
+                     f"Hdg:{heading_deg:.0f} Sonar:{sonar_cm:.0f}cm")
+            color = (0, 0, 255) if sonar_blocked else (0, 255, 0)
             cv2.putText(display, label, (8, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-            if depth_blocked:
-                cv2.putText(display, "BLOCKED", (8, 370),
+            if sonar_blocked:
+                cv2.putText(display, f"BLOCKED ({sonar_cm:.0f}cm)", (8, 370),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             cv2.imshow("Exploration", display)
             if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -233,6 +236,7 @@ def main():
         elapsed = time.time() - t_start
         metadata = {
             "session_name": session_name,
+            "protocol": "IMG5",
             "total_frames": frame_count,
             "overrides": override_count,
             "duration_s": round(elapsed, 1),
@@ -255,4 +259,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

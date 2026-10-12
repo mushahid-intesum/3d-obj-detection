@@ -4,9 +4,11 @@ dataset.py — PyTorch Dataset for offline RL image-goal navigation.
 
 Loads the index-based transition dataset produced by hindsight_relabel.py:
   - frames.npz:      shared image bank (N, 96, 96, 3) uint8
-  - transitions.npz: obs_idx, next_obs_idx, goal_idx, actions, rewards, dones
+  - transitions.npz: obs_idx, next_obs_idx, goal_idx, actions, rewards, dones,
+                     obs_sonar, goal_sonar
 
-Serves (obs, goal, action, reward, next_obs, done) batches for IQL training.
+Serves (obs, goal, action, reward, next_obs, done, obs_sonar, goal_sonar)
+batches for IQL training.
 """
 
 import os
@@ -16,7 +18,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-# ─── Action Space ───
+# ─── Constants ───
 ACTION_FORWARD    = 0
 ACTION_TURN_RIGHT = 1
 ACTION_TURN_LEFT  = 2
@@ -25,16 +27,19 @@ NUM_ACTIONS       = 4
 
 ACTION_NAMES = ["FORWARD", "TURN_RIGHT", "TURN_LEFT", "STOP"]
 
+SONAR_MAX_CM = 200.0   # normalization constant: sonar_cm / SONAR_MAX_CM → [0, 1]
+
 
 class OfflineNavDataset(Dataset):
     """
     PyTorch Dataset for offline goal-conditioned RL navigation.
 
     Loads pre-built transitions from hindsight_relabel.py output.
-    Each sample contains (obs, goal, action, reward, next_obs, done).
+    Each sample contains (obs, goal, action, reward, next_obs, done,
+    obs_sonar, goal_sonar).
 
     Images are stored once in a shared frame bank and referenced by index
-    to avoid duplication.
+    to avoid duplication. Sonar values are pre-indexed per transition.
     """
 
     def __init__(self, dataset_dir, img_size=128, augment=True):
@@ -62,6 +67,8 @@ class OfflineNavDataset(Dataset):
         self.actions      = trans["actions"]       # (M,) int32
         self.rewards      = trans["rewards"]       # (M,) float32
         self.dones        = trans["dones"]         # (M,) bool
+        self.obs_sonar    = trans["obs_sonar"]     # (M,) float32, raw cm
+        self.goal_sonar   = trans["goal_sonar"]    # (M,) float32, raw cm
 
         # Load dataset info
         info_path = os.path.join(dataset_dir, "dataset_info.json")
@@ -75,6 +82,8 @@ class OfflineNavDataset(Dataset):
               f"{len(self.obs_idx)} transitions")
         if "action_distribution" in self.info:
             print(f"[Dataset] Action distribution: {self.info['action_distribution']}")
+        print(f"[Dataset] Sonar: obs_mean={self.obs_sonar.mean():.1f}cm, "
+              f"goal_mean={self.goal_sonar.mean():.1f}cm")
 
     def __len__(self):
         return len(self.obs_idx)
@@ -106,18 +115,24 @@ class OfflineNavDataset(Dataset):
         reward   = float(self.rewards[idx])
         done     = float(self.dones[idx])
 
+        # Normalize sonar: [0, 200] → [0, 1], clamped
+        obs_sonar  = min(float(self.obs_sonar[idx])  / SONAR_MAX_CM, 1.0)
+        goal_sonar = min(float(self.goal_sonar[idx]) / SONAR_MAX_CM, 1.0)
+
         if self.augment:
             obs, goal, next_obs, action = self._augment(
                 obs, goal, next_obs, action
             )
 
         return {
-            "obs":      obs,                                          # (3, 96, 96)
-            "goal":     goal,                                         # (3, 96, 96)
-            "next_obs": next_obs,                                     # (3, 96, 96)
-            "action":   torch.tensor(action, dtype=torch.long),       # scalar
-            "reward":   torch.tensor(reward, dtype=torch.float32),    # scalar
-            "done":     torch.tensor(done, dtype=torch.float32),      # scalar
+            "obs":        obs,                                          # (3, 96, 96)
+            "goal":       goal,                                         # (3, 96, 96)
+            "next_obs":   next_obs,                                     # (3, 96, 96)
+            "action":     torch.tensor(action, dtype=torch.long),       # scalar
+            "reward":     torch.tensor(reward, dtype=torch.float32),    # scalar
+            "done":       torch.tensor(done, dtype=torch.float32),      # scalar
+            "obs_sonar":  torch.tensor(obs_sonar, dtype=torch.float32), # scalar [0,1]
+            "goal_sonar": torch.tensor(goal_sonar, dtype=torch.float32),# scalar [0,1]
         }
 
 

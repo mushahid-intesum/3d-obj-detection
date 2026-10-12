@@ -8,6 +8,7 @@ idf_component_register(
         "inference.cpp"
         "wifi_stream.c"
         "image_proc.c"
+        "sonar.c"
     INCLUDE_DIRS
         "include"
         "."

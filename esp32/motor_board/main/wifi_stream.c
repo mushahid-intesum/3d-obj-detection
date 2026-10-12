@@ -1,6 +1,6 @@
 /**
  * @file wifi_stream.c
- * @brief WiFi STA mode and TCP server — IMG4 protocol for free exploration.
+ * @brief WiFi STA mode and TCP server — IMG5 protocol for free exploration.
  */
 #include "wifi_stream.h"
 #include "config.h"
@@ -208,32 +208,34 @@ static esp_err_t send_all(const void *buf, size_t len)
 }
 
 esp_err_t stream_send_frame(uint32_t frame_id, uint32_t timestep,
-                            uint8_t action_taken, uint8_t depth_blocked,
-                            float heading_deg,
+                            uint8_t action_taken, uint8_t sonar_blocked,
+                            float sonar_cm, float heading_deg,
                             const uint8_t *jpeg_buf, uint32_t jpeg_len)
 {
     if (s_client_sock < 0) return ESP_FAIL;
 
     /*
-     * IMG4 packet layout (22-byte header):
-     *   [0..3]   magic        0x494D4734
-     *   [4..7]   frame_id     uint32 LE
-     *   [8..11]  timestep     uint32 LE
-     *   [12]     action_taken uint8
-     *   [13]     depth_blocked uint8
-     *   [14..17] heading_deg  float32 LE
-     *   [18..21] jpeg_len     uint32 LE
-     *   [22..N]  jpeg_data
+     * IMG5 packet layout (26-byte header):
+     *   [0..3]   magic          0x494D4735 ("IMG5")
+     *   [4..7]   frame_id       uint32 LE
+     *   [8..11]  timestep       uint32 LE
+     *   [12]     action_taken   uint8
+     *   [13]     sonar_blocked  uint8
+     *   [14..17] sonar_cm       float32 LE
+     *   [18..21] heading_deg    float32 LE
+     *   [22..25] jpeg_len       uint32 LE
+     *   [26..N]  jpeg_data
      */
-    uint8_t header[22];
+    uint8_t header[STREAM_HEADER_SIZE];
     uint32_t magic = STREAM_MAGIC;
     memcpy(&header[0],  &magic, 4);
     memcpy(&header[4],  &frame_id, 4);
     memcpy(&header[8],  &timestep, 4);
     header[12] = action_taken;
-    header[13] = depth_blocked;
-    memcpy(&header[14], &heading_deg, 4);
-    memcpy(&header[18], &jpeg_len, 4);
+    header[13] = sonar_blocked;
+    memcpy(&header[14], &sonar_cm, 4);
+    memcpy(&header[18], &heading_deg, 4);
+    memcpy(&header[22], &jpeg_len, 4);
 
     if (send_all(header, sizeof(header)) != ESP_OK) return ESP_FAIL;
     return send_all(jpeg_buf, jpeg_len);
