@@ -4,11 +4,10 @@ idf_component_register(
         "motor.c"
         "imu_uart.c"
         "explorer.c"
-        "spi_slave.c"
-        "correlation.c"
         "navigator.c"
-        "inference.c"
-        "test_mode.c"
+        "inference.cpp"
+        "wifi_stream.c"
+        "image_proc.c"
     INCLUDE_DIRS
         "include"
         "."
@@ -18,7 +17,6 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_ledc
         esp_driver_uart
-        esp_driver_spi
         esp_wifi
         esp_event
         esp_netif

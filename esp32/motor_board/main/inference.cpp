@@ -1,15 +1,14 @@
 /**
- * @file inference.c
- * @brief Inference stub for Motor Board — compiles without TFLite.
+ * @file inference.cpp
+ * @brief Inference stub — compiles without TFLite.
  *
  * Returns ESP_ERR_NOT_FOUND from inference_init(), which causes
  * main.c to select collection mode (pink noise explorer).
  *
  * When models are ready:
  *   1. Add tflite-micro component to idf_component.yml
- *   2. Delete this file
- *   3. Rename inference_tflite.cpp → inference.cpp
- *   4. Uncomment the #include "policy_model.h" line
+ *   2. Replace this file with the real TFLite implementation
+ *   3. Include the exported policy_model.h C header
  */
 #include "inference.h"
 #include "esp_log.h"
@@ -24,10 +23,18 @@ esp_err_t inference_init(void)
     return ESP_ERR_NOT_FOUND;
 }
 
-esp_err_t inference_run_policy(const int8_t *corr_cue, int8_t *action_logits)
+esp_err_t inference_run_policy(const uint8_t *obs_img, float sonar_cm,
+                               int8_t *action_logits)
 {
-    (void)corr_cue;
+    (void)obs_img;
+    (void)sonar_cm;
     (void)action_logits;
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t inference_set_goal(const uint8_t *goal_img)
+{
+    (void)goal_img;
     return ESP_ERR_INVALID_STATE;
 }
 

@@ -1,27 +1,26 @@
 /**
  * @file navigator.c
- * @brief Autonomous navigation loop on Motor Board.
+ * @brief Autonomous image-goal navigation (single board).
  *
- * Core loop (camera driver):
+ * Core loop:
  *   1. Cache goal features (from first frame or NVS)
  *   2. Per step:
- *      a. Get camera data
- *      b. Get obstacle data from supersonic
- *      c. Pool obs features 8×8 → 4×4
- *      d. Correlate obs with goal → 258-dim cue
- *      e. Run policy → action logits → argmax
- *      f. Safety override if obstacle
- *      g. Execute motor action
+ *      a. Capture camera frame → downsample to 96×96
+ *      b. Read sonar distance
+ *      c. Run student model: image + sonar → action logits
+ *      d. Safety override if sonar blocked
+ *      e. Execute motor action
+ *      f. Stream frame to laptop (optional monitoring)
  */
 #include "navigator.h"
 #include "inference.h"
-#include "correlation.h"
 #include "motor.h"
 #include "imu_uart.h"
 #include "config.h"
 
 #include "camera.h"
 #include "image_proc.h"
+#include "wifi_stream.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -31,15 +30,30 @@
 #include "nvs_flash.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include "esp_heap_caps.h"
 
 static const char *TAG = "navigator";
 
-/** Cached goal features (pooled 4×4×1024) — allocated in PSRAM. */
-static int8_t *s_goal_features = NULL;
+/** Downscaled image buffer — allocated in PSRAM. */
 static uint8_t *s_img_buf = NULL;
 
+/** Goal image buffer — allocated in PSRAM. */
+static uint8_t *s_goal_img = NULL;
+
 static const char *ACTION_NAMES[] = {"FWD", "RIGHT", "LEFT", "STOP"};
+
+/* Forward declaration for sonar — will be in sonar.h after Phase 1B */
+extern float sonar_get_distance_cm(void);
+extern bool  sonar_is_blocked(void);
+
+/**
+ * @brief Get a random turn direction for obstacle override.
+ */
+static uint8_t random_turn(void)
+{
+    return (rand() % 2 == 0) ? ACTION_TURN_RIGHT : ACTION_TURN_LEFT;
+}
 
 /**
  * @brief Navigation task — runs on core 1.
@@ -56,14 +70,31 @@ static void navigation_task(void *pvParam)
         return;
     }
 
-    /* Obtain goal features */
+    /* Allocate image buffers in PSRAM */
+    if (!s_img_buf) {
+        s_img_buf = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
+    }
+    if (!s_goal_img) {
+        s_goal_img = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
+    }
+    if (!s_img_buf || !s_goal_img) {
+        ESP_LOGE(TAG, "Failed to allocate image buffers in PSRAM!");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* Obtain goal */
     bool have_goal = false;
 
     if (mode == NAV_GOAL_FROM_FLASH) {
-        err = navigator_load_goal(s_goal_features);
+        err = navigator_load_goal(s_goal_img);
         if (err == ESP_OK) {
-            have_goal = true;
-            ESP_LOGI(TAG, "Goal loaded from NVS");
+            /* Encode and cache goal features in the inference engine */
+            err = inference_set_goal(s_goal_img);
+            if (err == ESP_OK) {
+                have_goal = true;
+                ESP_LOGI(TAG, "Goal loaded from NVS and encoded");
+            }
         } else {
             ESP_LOGW(TAG, "No goal in NVS — will use first frame");
         }
@@ -73,98 +104,74 @@ static void navigation_task(void *pvParam)
     ESP_LOGI(TAG, "Starting navigation (max %d steps, %d Hz)...",
              NAV_MAX_STEPS, NAV_RATE_HZ);
 
-    /* Allocate buffers in PSRAM */
-    if (!s_goal_features) {
-        s_goal_features = (int8_t *)heap_caps_malloc(CORR_FEAT_SIZE, MALLOC_CAP_SPIRAM);
-    }
-    int8_t *obs_features_raw = (int8_t *)heap_caps_malloc(ENCODER_FEAT_RAW_SIZE, MALLOC_CAP_SPIRAM);
-    int8_t *obs_features = (int8_t *)heap_caps_malloc(CORR_FEAT_SIZE, MALLOC_CAP_SPIRAM);
-    int8_t *corr_cue = (int8_t *)heap_caps_malloc(CORR_CUE_SIZE, MALLOC_CAP_SPIRAM);
-    int8_t action_logits[4];
-
-    if (!s_img_buf) {
-        s_img_buf = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
-        assert(s_img_buf && "Failed to alloc s_img_buf in PSRAM");
-    }
-
-    if (!s_goal_features || !obs_features_raw || !obs_features || !corr_cue) {
-        ESP_LOGE(TAG, "Failed to allocate nav buffers in PSRAM!");
-        vTaskDelete(NULL);
-        return;
-    }
-
     int step = 0;
     uint8_t last_action = ACTION_STOP;
     uint32_t frame_id = 0;
-    int nav_steps = 0;
+    int8_t action_logits[4];
 
     while (step < NAV_MAX_STEPS) {
         int64_t t_start = esp_timer_get_time();
 
-        /* 1. Prepare SPI response (from last step) */
+        /* 1. Capture camera frame */
+        camera_fb_t *fb = camera_capture_frame();
+        if (!fb) {
+            ESP_LOGW(TAG, "Frame capture failed, skipping");
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        /* 2. Downsample to 96×96 RGB888 */
+        image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
+
+        /* 3. Read sonar + IMU */
+        float sonar_cm = sonar_get_distance_cm();
+        bool sonar_blocked = (sonar_cm < SONAR_THRESHOLD_CM);
         float heading = imu_get_heading();
         if (heading < 0.0f) heading = 0.0f;
 
-        uint8_t obstacle_flag = 0;
-        uint8_t msg_type = 0;
-
-        /* Allocate image buffer in PSRAM */
-        if (!s_img_buf) {
-            s_img_buf = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
-            assert(s_img_buf && "Failed to alloc s_img_buf in PSRAM");
-        }
-
-        // Get Images from Camera
-        camera_fb_t *fb = camera_capture_frame();
-
-        *obs_features_raw = NULL;
-        if (!obs_features_raw) {
-            obs_features_raw = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
-            assert(obs_features_raw && "Failed to alloc dg_img in PSRAM");
-        }
-        image_downsample(fb->buf, fb->width, fb->height, obs_features_raw);
-
-        // TODO: Obstacle avoidance via supersonic
-
-
-        ESP_LOGI(TAG, "Navigation ended after %d steps", nav_steps);
-        vTaskDelete(NULL);
-
-        /* 3. Pool raw 6×6 features to 4×4 */
-        correlation_pool_features(obs_features_raw, obs_features);
-
         /* 4. If no goal yet, use first frame as goal */
         if (!have_goal) {
-            memcpy(s_goal_features, obs_features, CORR_FEAT_SIZE);
+            memcpy(s_goal_img, s_img_buf, IMG_TARGET_SIZE);
+            inference_set_goal(s_goal_img);
             have_goal = true;
             ESP_LOGI(TAG, "Goal set from first frame");
-            /* Save for next boot */
-            navigator_save_goal(s_goal_features);
+            navigator_save_goal(s_goal_img);
+
             /* Skip this step — need a different observation */
             last_action = ACTION_FORWARD;
             motor_execute_action(ACTION_FORWARD);
+            camera_release_frame(fb);
             step++;
             continue;
         }
 
-        /* 5. Correlate obs with goal → 258-dim cue */
-        correlation_compute(s_goal_features, obs_features, corr_cue);
-
-        /* 6. Run policy MLP */
-        err = inference_run_policy(corr_cue, action_logits);
+        /* 5. Run policy inference: image + sonar → action logits */
+        err = inference_run_policy(s_img_buf, sonar_cm, action_logits);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Policy inference failed");
+            camera_release_frame(fb);
             break;
         }
 
         int policy_idx = inference_argmax_i8(action_logits, 4);
         uint8_t action = (uint8_t)policy_idx;
 
-        /* 7. Safety override */
-        if (obstacle_flag && action == ACTION_FORWARD) {
-            ESP_LOGW(TAG, "Obstacle override! FWD → RIGHT");
-            action = ACTION_TURN_RIGHT;
+        /* 6. Safety override (always active) */
+        if (sonar_blocked && action == ACTION_FORWARD) {
+            ESP_LOGW(TAG, "Sonar override! dist=%.1f cm, FWD → turn", sonar_cm);
+            action = random_turn();
         }
+
+        /* 7. Stream frame to laptop (monitoring, best-effort) */
+        if (stream_is_connected()) {
+            stream_send_frame(
+                frame_id, (uint32_t)step, action,
+                sonar_blocked ? 1 : 0,
+                heading, fb->buf, fb->len
+            );
+        }
+        camera_release_frame(fb);
+        frame_id++;
 
         /* 8. Execute action */
         motor_execute_action(action);
@@ -180,9 +187,10 @@ static void navigation_task(void *pvParam)
         int64_t t_elapsed_us = esp_timer_get_time() - t_start;
         if (step % 5 == 0) {
             const char *aname = (action < 4) ? ACTION_NAMES[action] : "?";
-            ESP_LOGI(TAG, "Step %3d: action=%s hdg=%.1f obs=%d "
+            ESP_LOGI(TAG, "Step %3d: action=%s hdg=%.1f sonar=%.1f%s "
                      "logits=[%d,%d,%d,%d] %lldms",
-                     step, aname, heading, obstacle_flag,
+                     step, aname, heading, sonar_cm,
+                     sonar_blocked ? " BLOCKED" : "",
                      action_logits[0], action_logits[1],
                      action_logits[2], action_logits[3],
                      t_elapsed_us / 1000);
@@ -221,39 +229,42 @@ esp_err_t navigator_start(nav_goal_mode_t mode)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  Goal feature persistence (NVS)
+ *  Goal image persistence (NVS)
+ *
+ *  Stores the raw 96×96×3 goal image (27648 bytes) in NVS.
+ *  NVS max blob size is 508000 bytes, so this fits easily.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-esp_err_t navigator_save_goal(const int8_t *features)
+esp_err_t navigator_save_goal(const uint8_t *goal_img)
 {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("nav", NVS_READWRITE, &handle);
     if (err != ESP_OK) return err;
 
-    err = nvs_set_blob(handle, "goal_feat", features, CORR_FEAT_SIZE);
+    err = nvs_set_blob(handle, "goal_img", goal_img, IMG_TARGET_SIZE);
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
     nvs_close(handle);
 
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Goal features saved to NVS (%d bytes)", CORR_FEAT_SIZE);
+        ESP_LOGI(TAG, "Goal image saved to NVS (%d bytes)", IMG_TARGET_SIZE);
     }
     return err;
 }
 
-esp_err_t navigator_load_goal(int8_t *features)
+esp_err_t navigator_load_goal(uint8_t *goal_img)
 {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("nav", NVS_READONLY, &handle);
     if (err != ESP_OK) return err;
 
-    size_t required = CORR_FEAT_SIZE;
-    err = nvs_get_blob(handle, "goal_feat", features, &required);
+    size_t required = IMG_TARGET_SIZE;
+    err = nvs_get_blob(handle, "goal_img", goal_img, &required);
     nvs_close(handle);
 
-    if (err == ESP_OK && required == CORR_FEAT_SIZE) {
-        ESP_LOGI(TAG, "Goal features loaded from NVS (%zu bytes)", required);
+    if (err == ESP_OK && required == IMG_TARGET_SIZE) {
+        ESP_LOGI(TAG, "Goal image loaded from NVS (%zu bytes)", required);
     }
     return err;
 }

@@ -1,12 +1,12 @@
 /**
  * @file main.c
- * @brief Motor Board main — dual-mode: collection + navigation.
+ * @brief Single-board main — dual-mode: collection + navigation.
  *
  * Collection mode (default — no policy model):
- *   Pink noise explorer → SPI slave → obstacle override → motors
+ *   Pink noise explorer → sonar obstacle override → motors → stream to laptop
  *
  * Navigation mode (when policy model is flashed):
- *   SPI slave receives features → correlate → policy → motors
+ *   Camera → student model inference → sonar safety override → motors
  *
  * Mode is auto-detected based on whether policy model is embedded.
  */
@@ -22,34 +22,26 @@
 
 #include "inference.h"
 
-#if defined(TEST_MODE) && TEST_MODE
-#include "test_mode.h"
-#endif
-
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include <stdlib.h> // Required for rand() and srand()
-#include <time.h> 
+#include <stdlib.h>
+#include <time.h>
 
-static const char *TAG = "mot_main";
+static const char *TAG = "main";
+
+/* Forward declaration — sonar driver (Phase 1B) */
+extern esp_err_t sonar_init(void);
+extern float     sonar_get_distance_cm(void);
+extern bool      sonar_is_blocked(void);
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Collection Mode — pink noise exploration
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static const char *ACTION_NAMES[] = {"FWD", "RIGHT", "LEFT", "STOP"};
-
-static int get_random_number() {
-    srand(time(NULL));
-
-    int min = 1;
-    int max = 100;
-    
-    return (rand() % (max - min + 1)) + min;
-}
 
 static void exploration_task(void *pvParam)
 {
@@ -59,6 +51,8 @@ static void exploration_task(void *pvParam)
 
     uint32_t frame_id = 0;
     uint32_t timestep = 0;
+
+    srand((unsigned int)time(NULL));
 
     ESP_LOGI(TAG, "Collection loop started (step-and-stop, cycle=%d ms)",
              EXPLORE_CYCLE_MS);
@@ -70,37 +64,30 @@ static void exploration_task(void *pvParam)
         float heading_before = imu_get_heading();
         if (heading_before < 0.0f) heading_before = 0.0f;
 
-        /* 2. Depth guard — run obstacle detector on downsampled frame */
-        uint8_t obstacle_flag = 0;
-        // TODO: Obstacle code via supersonic
+        /* ── 2. Read sonar distance ── */
+        float sonar_cm = sonar_get_distance_cm();
+        uint8_t sonar_blocked = (sonar_cm < SONAR_THRESHOLD_CM) ? 1 : 0;
 
         /* ── 3. Apply obstacle override ── */
         uint8_t final_action = planned_action;
-        if (obstacle_flag && final_action == ACTION_FORWARD) {
-
-            int coinFlip = get_random_number();
-
-            if (coinFlip > 50) {
-                final_action = ACTION_TURN_RIGHT;
-            } else {
-                final_action = ACTION_TURN_LEFT;
-            }
-
-            ESP_LOGW(TAG, "Obstacle override!");
+        if (sonar_blocked && final_action == ACTION_FORWARD) {
+            final_action = (rand() % 2 == 0) ? ACTION_TURN_RIGHT : ACTION_TURN_LEFT;
+            ESP_LOGW(TAG, "Sonar override! dist=%.1f cm", sonar_cm);
         }
 
         /* ── 4. Execute action (blocking — 500ms burst or IMU turn) ── */
-        ESP_LOGI(TAG, "[pre]  heading=%.1f° action=%s",
+        ESP_LOGI(TAG, "[pre]  heading=%.1f° action=%s sonar=%.1f%s",
                  heading_before,
-                 final_action < 4 ? ACTION_NAMES[final_action] : "?");
+                 final_action < 4 ? ACTION_NAMES[final_action] : "?",
+                 sonar_cm,
+                 sonar_blocked ? " BLOCKED" : "");
 
         motor_execute_action(final_action);
 
-        /* ── 5. Post-action settle: motors are now stopped.
-         *       Cam board captures the "result" frame during this window.
-         *       Update SPI response with final action + post-action heading. ── */
-        vTaskDelay(pdMS_TO_TICKS(50));   /* brief settle for vibration */
+        /* ── 5. Post-action settle ── */
+        vTaskDelay(pdMS_TO_TICKS(50));
         float heading_after = imu_get_heading();
+        if (heading_after < 0.0f) heading_after = 0.0f;
 
         /* ── 6. Log heading change ── */
         float delta = heading_after - heading_before;
@@ -108,11 +95,12 @@ static void exploration_task(void *pvParam)
         if (delta < -180.0f) delta += 360.0f;
 
         uint32_t step = explorer_get_step();
-        ESP_LOGI(TAG, "[post] step=%lu heading=%.1f° Δ=%.1f° action=%s obstacle=%d",
+        ESP_LOGI(TAG, "[post] step=%lu heading=%.1f° Δ=%.1f° action=%s sonar=%.1f",
                  (unsigned long)step, heading_after, delta,
                  final_action < 4 ? ACTION_NAMES[final_action] : "?",
-                 obstacle_flag);
+                 sonar_cm);
 
+        /* ── 7. Capture post-action frame ── */
         camera_fb_t *fb = camera_capture_frame();
         if (!fb) {
             ESP_LOGW(TAG, "Frame capture failed, skipping");
@@ -120,14 +108,11 @@ static void exploration_task(void *pvParam)
             continue;
         }
 
-        uint8_t action_taken = ACTION_STOP;
-        float heading_deg = 0.0f;
-
-        /* 4. Stream IMG4 to laptop (best-effort — skip if no client) */
+        /* ── 8. Stream to laptop (best-effort — skip if no client) ── */
         if (stream_is_connected()) {
             stream_send_frame(
-                frame_id, timestep, action_taken, obstacle_flag,
-                heading_deg, fb->buf, fb->len
+                frame_id, timestep, final_action, sonar_blocked,
+                heading_after, fb->buf, fb->len
             );
         }
 
@@ -136,11 +121,8 @@ static void exploration_task(void *pvParam)
         frame_id++;
         timestep++;
 
-        /* 5. Wait for motor action to complete (~500ms burst + settle)
-         *    before capturing the next frame */
+        /* ── 9. Cycle delay ── */
         vTaskDelay(pdMS_TO_TICKS(EXPLORE_CYCLE_MS));
-
-        /* No extra delay — action burst + SPI exchange already fills the cycle */
     }
 }
 
@@ -151,7 +133,7 @@ static void exploration_task(void *pvParam)
 void app_main(void)
 {
     ESP_LOGI(TAG, "╔═══════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║   Motor Board — Dual Mode             ║");
+    ESP_LOGI(TAG, "║   ImageNav — Single Board             ║");
     ESP_LOGI(TAG, "╚═══════════════════════════════════════╝");
 
     /* NVS */
@@ -163,31 +145,26 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    /* ── 1. Camera (must be before motors — LEDC timer conflict) ── */
     ESP_LOGI(TAG, "[1/5] Initializing camera...");
     ESP_ERROR_CHECK(camera_init_jpeg());
 
-    /* Initialize motor driver */
-    ESP_LOGI(TAG, "[1/4] Initializing motors...");
+    /* ── 2. Motors ── */
+    ESP_LOGI(TAG, "[2/5] Initializing motors...");
     ESP_ERROR_CHECK(motor_init());
 
-    /* Initialize IMU */
-    ESP_LOGI(TAG, "[2/4] Initializing IMU UART...");
+    /* ── 3. IMU ── */
+    ESP_LOGI(TAG, "[3/5] Initializing IMU UART...");
     ESP_ERROR_CHECK(imu_init());
 
-    /* Initialize Supersonic */
-    ESP_LOGI(TAG, "[3/4] Initializing Supersonic...");
-    ESP_ERROR_CHECK(supersonic_init());
+    /* ── 4. Sonar ── */
+    ESP_LOGI(TAG, "[4/5] Initializing HC-SR04 sonar...");
+    ESP_ERROR_CHECK(sonar_init());
 
-    ESP_LOGI(TAG, "[4/5] Connecting to WiFi...");
+    /* ── 5. WiFi ── */
+    ESP_LOGI(TAG, "[5/5] Connecting to WiFi...");
     ESP_ERROR_CHECK(wifi_init_sta());
 
-#if defined(TEST_MODE) && TEST_MODE
-    /* ── TEST MODE: connect to test server instead of normal operation ── */
-    ESP_LOGI(TAG, "*** TEST MODE ENABLED ***");
-    test_mode_run_motor();
-    ESP_LOGI(TAG, "Test mode complete — halting.");
-    return;
-#else
     /* Try to initialize policy — determines mode */
     bool nav_mode = false;
     ret = inference_init();
@@ -198,18 +175,17 @@ void app_main(void)
         ESP_LOGI(TAG, "No policy model — COLLECTION mode");
     }
 
-    ESP_LOGI(TAG, "[5/5] Starting TCP server...");
+    /* Start TCP server for streaming */
     ESP_ERROR_CHECK(stream_server_start(STREAM_DEFAULT_PORT));
-
     stream_accept_start();
 
     if (nav_mode) {
-        /* Navigation mode — skip explorer, use navigator */
-        ESP_LOGI(TAG, "[4/4] Starting navigator...");
+        /* Navigation mode — use student model */
+        ESP_LOGI(TAG, "Starting navigator...");
         ESP_ERROR_CHECK(navigator_start(NAV_GOAL_FROM_FLASH));
     } else {
         /* Collection mode — use pink noise explorer */
-        ESP_LOGI(TAG, "[4/4] Initializing explorer...");
+        ESP_LOGI(TAG, "Starting explorer...");
         ESP_ERROR_CHECK(explorer_init(42));
 
         xTaskCreatePinnedToCore(
@@ -218,7 +194,6 @@ void app_main(void)
         );
     }
 
-    ESP_LOGI(TAG, "Motor Board running (%s mode).",
+    ESP_LOGI(TAG, "Board running (%s mode).",
              nav_mode ? "navigation" : "collection");
-#endif
 }

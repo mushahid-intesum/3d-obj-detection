@@ -1,12 +1,12 @@
 /**
  * @file navigator.h
- * @brief Autonomous image-goal navigation on Motor Board.
+ * @brief Autonomous image-goal navigation (single board).
  *
  * In navigation mode:
- *   1. Receives encoder features from Camera
- *   2. Correlates with cached goal features (plain C int8)
- *   3. Runs policy MLP to select action
- *   4. Applies safety override if obstacle detected
+ *   1. Captures camera frame → downsample to 96×96
+ *   2. Reads sonar distance for obstacle awareness
+ *   3. Runs student model: image + sonar → action logits
+ *   4. Applies sonar safety override if needed
  *   5. Executes motor action
  */
 #ifndef NAVIGATOR_H
@@ -15,37 +15,39 @@
 #include "esp_err.h"
 #include <stdint.h>
 
-/** How the goal image features are obtained. */
+/** How the goal image is obtained. */
 typedef enum {
-    NAV_GOAL_FROM_FIRST_FRAME,  /**< Use first SPI-received features as goal. */
-    NAV_GOAL_FROM_FLASH,        /**< Load pre-stored goal features from NVS. */
+    NAV_GOAL_FROM_FIRST_FRAME,  /**< Use first captured frame as goal. */
+    NAV_GOAL_FROM_FLASH,        /**< Load pre-stored goal image from NVS. */
 } nav_goal_mode_t;
 
 /**
  * @brief Start the navigation task.
  *
- * Replaces the exploration task. Blocks on SPI transactions from Camera Board,
- * runs correlation + policy, executes motor actions.
+ * Replaces the exploration task. Captures frames, runs policy,
+ * executes motor actions.
  *
- * @param mode  How to obtain the goal features.
+ * @param mode  How to obtain the goal image.
  * @return ESP_OK on success.
  */
 esp_err_t navigator_start(nav_goal_mode_t mode);
 
 /**
- * @brief Store goal features to NVS for later use.
+ * @brief Store goal image to NVS for later use.
  *
- * @param features  288 bytes of int8 encoder features.
+ * Saves the raw 96×96×3 RGB image (27648 bytes).
+ *
+ * @param goal_img  96×96×3 uint8 RGB image.
  * @return ESP_OK on success.
  */
-esp_err_t navigator_save_goal(const int8_t *features);
+esp_err_t navigator_save_goal(const uint8_t *goal_img);
 
 /**
- * @brief Load goal features from NVS.
+ * @brief Load goal image from NVS.
  *
- * @param features  Output buffer, 288 bytes.
+ * @param goal_img  Output buffer, 27648 bytes.
  * @return ESP_OK on success.
  */
-esp_err_t navigator_load_goal(int8_t *features);
+esp_err_t navigator_load_goal(uint8_t *goal_img);
 
 #endif /* NAVIGATOR_H */

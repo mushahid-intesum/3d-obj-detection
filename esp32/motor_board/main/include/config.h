@@ -1,9 +1,9 @@
 /**
  * @file config.h
- * @brief Hardware configuration for Motor Board (ESP32 #2).
+ * @brief Hardware configuration — single ESP32-S3 board.
  *
- * DRV8833 motor driver, Arduino IMU UART, SPI slave pins.
- * No camera on this board.
+ * All-in-one: OV3660 camera, DRV8833 motors, HC-SR04 sonar,
+ * Arduino IMU UART, WiFi streaming.
  */
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -20,7 +20,6 @@
 #define MOTOR_IN4       41
 #define MOTOR_ENA       42
 #define MOTOR_ENB       14
-
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  OV3660 Camera (Freenove ESP32-S3 WROOM)
@@ -70,16 +69,22 @@
 #define IMU_UART_TX_PIN   21
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  SPI Slave — from Camera Board (ESP32 #1)
+ *  HC-SR04 Ultrasonic Sonar
  *
- *  Must match Camera Board SPI master pin assignments.
- *  MOSI from master → this board receives obstacle/features.
- *  MISO from this board → sends heading + action back.
+ *  TRIG: 10µs HIGH pulse triggers measurement.
+ *  ECHO: pulse width = round-trip time → distance_cm = us / 58.
+ *
+ *  NOTE: HC-SR04 runs at 5V. ECHO output is 5V — use a voltage divider
+ *  (e.g. 1kΩ + 2kΩ) to drop to ~3.3V for ESP32 GPIO input.
+ *  TRIG accepts 3.3V (triggers on ≥2.5V).
+ *
+ *  TODO: Set actual pin numbers before flashing.
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define SPI_SLAVE_MOSI   15
-#define SPI_SLAVE_MISO   16
-#define SPI_SLAVE_CLK    17
-#define SPI_SLAVE_CS     18
+#define SONAR_TRIG_PIN       0    /* TODO: assign actual GPIO */
+#define SONAR_ECHO_PIN       0    /* TODO: assign actual GPIO */
+#define SONAR_THRESHOLD_CM   25.0f  /* obstacle if distance < this */
+#define SONAR_MAX_RANGE_CM   200.0f
+#define SONAR_TIMEOUT_US     30000  /* 30ms ≈ ~5m max range */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Exploration Parameters
@@ -88,7 +93,7 @@
 #define EXPLORE_SEQ_LENGTH   2048    /* pre-generated pink noise sequence */
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  Action Space (shared with Camera Board)
+ *  Action Space
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define ACTION_FORWARD    0
 #define ACTION_TURN_RIGHT 1
@@ -101,5 +106,10 @@
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define NAV_MAX_STEPS   200
 #define NAV_RATE_HZ     5
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  WiFi / Streaming
+ * ═══════════════════════════════════════════════════════════════════════════ */
+#define STREAM_DEFAULT_PORT  8888
 
 #endif /* CONFIG_H */
