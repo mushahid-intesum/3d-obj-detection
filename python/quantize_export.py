@@ -111,12 +111,13 @@ def run_qat(student, teacher, loader):
 
         obs = batch["obs"].to(DEVICE)
         goal = batch["goal"].to(DEVICE)
+        obs_sonar = batch["obs_sonar"].to(DEVICE)
 
         with torch.no_grad():
-            teacher_logits = teacher(obs, goal)
+            teacher_logits = teacher(obs, goal, obs_sonar)
             teacher_actions = teacher_logits.argmax(dim=-1)
 
-        student_logits = student(obs, goal)
+        student_logits = student(obs, goal, obs_sonar)
 
         # Distillation loss during QAT
         t_soft = F.log_softmax(teacher_logits / QAT_TEMPERATURE, dim=-1)
@@ -157,7 +158,10 @@ class EncoderWrapper(nn.Module):
 
 
 class PolicyWrapper(nn.Module):
-    """Wrapper to export just the policy MLP."""
+    """Wrapper to export the policy MLP.
+
+    Takes the full cue (correlation + sonar concatenated) as a single input.
+    """
     def __init__(self, policy):
         super().__init__()
         self.policy = policy
@@ -171,6 +175,8 @@ def export_onnx(student_fp32, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     student_fp32.eval().cpu()
 
+    from student_model import CUE_DIM
+
     # Export encoder
     encoder_wrapper = EncoderWrapper(student_fp32.encoder)
     dummy_img = torch.randn(1, 3, 96, 96)
@@ -183,17 +189,17 @@ def export_onnx(student_fp32, output_dir):
     )
     print(f"[OK] Encoder ONNX: {encoder_path}")
 
-    # Export policy
+    # Export policy (input = correlation cue + sonar = CUE_DIM)
     policy_wrapper = PolicyWrapper(student_fp32.policy)
-    dummy_cue = torch.randn(1, 83)
+    dummy_cue = torch.randn(1, CUE_DIM)
     policy_path = os.path.join(output_dir, "policy.onnx")
     torch.onnx.export(
         policy_wrapper, dummy_cue, policy_path,
-        input_names=["correlation_cue"], output_names=["action_logits"],
+        input_names=["cue_with_sonar"], output_names=["action_logits"],
         opset_version=13,
-        dynamic_axes={"correlation_cue": {0: "batch"}, "action_logits": {0: "batch"}},
+        dynamic_axes={"cue_with_sonar": {0: "batch"}, "action_logits": {0: "batch"}},
     )
-    print(f"[OK] Policy ONNX: {policy_path}")
+    print(f"[OK] Policy ONNX: {policy_path} (input_dim={CUE_DIM})")
 
     return encoder_path, policy_path
 
@@ -313,8 +319,9 @@ def validate_fp32_vs_int8(student_fp32, loader, max_batches=50):
         obs = batch["obs"]
         goal = batch["goal"]
         actions = batch["action"]
+        obs_sonar = batch["obs_sonar"]
 
-        logits = student_fp32(obs, goal)
+        logits = student_fp32(obs, goal, obs_sonar)
         preds = logits.argmax(dim=-1)
         correct += (preds == actions).sum().item()
         total += len(actions)
@@ -388,10 +395,12 @@ def main():
                                 calibration_data=calib_data,
                                 input_shape=(1, 3, 96, 96))
     # Policy calibration: generate random cues
-    pol_calib = np.random.randn(CALIBRATION_SAMPLES, 258).astype(np.float32)
+    # Policy calibration: generate random cues (CUE_DIM = 259 with sonar)
+    from student_model import CUE_DIM
+    pol_calib = np.random.randn(CALIBRATION_SAMPLES, CUE_DIM).astype(np.float32)
     pol_ok = convert_to_tflite(policy_onnx, policy_tflite,
                                 calibration_data=pol_calib,
-                                input_shape=(1, 258))
+                                input_shape=(1, CUE_DIM))
 
     # Step 4: Generate C headers
     print("\n── Step 4: Generate C Headers ──")

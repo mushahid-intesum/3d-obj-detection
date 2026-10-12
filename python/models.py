@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-models.py — Depth-aware teacher model for ImageNav.
+models.py — Teacher model for ImageNav with sonar input.
 
 Components:
   - SharedEncoder:       ResNet producing 12×12 feature maps
   - CorrelationModule:   RSRNav-style cross-correlation
-  - DepthDecoder:        Auxiliary depth prediction head (training only)
-  - TeacherModel:        Full pipeline: encoder → correlation → action + depth
+  - PolicyNetwork:       Correlation cue + sonar → action logits
+  - QNetwork / VNetwork: IQL value heads (cue + sonar aware)
+  - TeacherModel:        Full pipeline: encoder → correlation → action
 """
 
 import torch
@@ -166,48 +167,32 @@ class CorrelationModule(nn.Module):
         return self.fc(x)
 
 
-# ─── Depth Decoder (auxiliary, training only) ───
-
-class DepthDecoder(nn.Module):
-    """
-    Lightweight depth prediction head.
-
-    Takes encoder feature maps (B, 512, 12, 12) and upsamples to (B, 1, 96, 96).
-    Only used during training — stripped for deployment.
-    """
-
-    def __init__(self, feat_dim=512):
-        super().__init__()
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(feat_dim, 128, 4, stride=2, padding=1),  # 12→24
-            nn.BatchNorm2d(128), nn.ReLU(inplace=True),
-
-            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),       # 24→48
-            nn.BatchNorm2d(64), nn.ReLU(inplace=True),
-
-            nn.ConvTranspose2d(64, 1, 4, stride=2, padding=1),         # 48→96
-            nn.Sigmoid(),  # depth in [0, 1]
-        )
-
-    def forward(self, features):
-        return self.decoder(features)  # (B, 1, 96, 96)
-
-
 # ─── Policy Head ───
 
 class PolicyNetwork(nn.Module):
-    """Maps correlation cue → action logits."""
+    """Maps correlation cue + sonar → action logits.
+
+    Sonar is concatenated as a normalized scalar [0, 1] to the cue vector
+    before the MLP, adding one extra input dimension.
+    """
 
     def __init__(self, cue_dim=512, hidden=256, num_actions=4):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(cue_dim, hidden), nn.ReLU(inplace=True),
+            nn.Linear(cue_dim + 1, hidden), nn.ReLU(inplace=True),
             nn.Linear(hidden, 128), nn.ReLU(inplace=True),
             nn.Linear(128, num_actions),
         )
 
-    def forward(self, cue):
-        return self.net(cue)
+    def forward(self, cue, obs_sonar):
+        """Args:
+            cue:       (B, cue_dim) correlation cue
+            obs_sonar: (B,) normalized sonar distance [0, 1]
+        Returns:
+            (B, num_actions) action logits
+        """
+        x = torch.cat([cue, obs_sonar.unsqueeze(-1)], dim=-1)
+        return self.net(x)
 
 
 # ─── Q-Network (IQL) ───
@@ -215,7 +200,7 @@ class PolicyNetwork(nn.Module):
 class QNetwork(nn.Module):
     """State-action Q-value estimator for IQL.
 
-    Takes correlation cue and discrete action index,
+    Takes correlation cue, sonar scalar, and discrete action index,
     returns scalar Q-value.
     """
 
@@ -223,21 +208,23 @@ class QNetwork(nn.Module):
         super().__init__()
         self.action_embed = nn.Embedding(num_actions, 32)
         self.net = nn.Sequential(
-            nn.Linear(cue_dim + 32, hidden), nn.ReLU(inplace=True),
+            nn.Linear(cue_dim + 1 + 32, hidden), nn.ReLU(inplace=True),
             nn.Linear(hidden, 128), nn.ReLU(inplace=True),
             nn.Linear(128, 1),
         )
 
-    def forward(self, cue, actions):
+    def forward(self, cue, obs_sonar, actions):
         """Args:
-            cue:     (B, cue_dim) correlation cue
-            actions: (B,) int64 action indices
+            cue:       (B, cue_dim) correlation cue
+            obs_sonar: (B,) normalized sonar distance [0, 1]
+            actions:   (B,) int64 action indices
         Returns:
             (B,) scalar Q-values
         """
-        a_emb = self.action_embed(actions)          # (B, 32)
-        x = torch.cat([cue, a_emb], dim=-1)         # (B, cue_dim+32)
-        return self.net(x).squeeze(-1)               # (B,)
+        a_emb = self.action_embed(actions)                # (B, 32)
+        x = torch.cat([cue, obs_sonar.unsqueeze(-1),
+                        a_emb], dim=-1)                    # (B, cue_dim+1+32)
+        return self.net(x).squeeze(-1)                     # (B,)
 
 
 # ─── V-Network (IQL) ───
@@ -245,43 +232,42 @@ class QNetwork(nn.Module):
 class VNetwork(nn.Module):
     """State value estimator for IQL.
 
-    Takes correlation cue, returns scalar V-value.
+    Takes correlation cue + sonar, returns scalar V-value.
     """
 
     def __init__(self, cue_dim=512, hidden=256):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(cue_dim, hidden), nn.ReLU(inplace=True),
+            nn.Linear(cue_dim + 1, hidden), nn.ReLU(inplace=True),
             nn.Linear(hidden, 128), nn.ReLU(inplace=True),
             nn.Linear(128, 1),
         )
 
-    def forward(self, cue):
+    def forward(self, cue, obs_sonar):
         """Args:
-            cue: (B, cue_dim) correlation cue
+            cue:       (B, cue_dim) correlation cue
+            obs_sonar: (B,) normalized sonar distance [0, 1]
         Returns:
             (B,) scalar V-values
         """
-        return self.net(cue).squeeze(-1)
+        x = torch.cat([cue, obs_sonar.unsqueeze(-1)], dim=-1)
+        return self.net(x).squeeze(-1)
 
 
 # ─── Full Teacher Model ───
 
 class TeacherModel(nn.Module):
     """
-    Depth-aware teacher model.
+    Teacher model for image-goal navigation with sonar input.
 
     Architecture:
-      obs → Encoder → f_obs ─┬→ Correlation(f_goal, f_obs) → cue → ActionHead
-      goal → Encoder → f_goal┘                                 ↑
-                        f_obs ─→ DepthDecoder → depth_pred     (auxiliary)
-
-    At deployment, DepthDecoder is removed. The encoder has learned
-    depth-aware features through the auxiliary loss.
+      obs  → Encoder → f_obs ─┬→ Correlation(f_goal, f_obs) → cue ──┐
+      goal → Encoder → f_goal ┘                                      │
+      sonar_cm (normalized) ─────────────────────────────────────→ cat → Policy → actions
+                                                                       → Q1, Q2, V (IQL)
     """
 
-    def __init__(self, feat_dim=512, cue_dim=512, num_actions=4,
-                 use_depth_head=True):
+    def __init__(self, feat_dim=512, cue_dim=512, num_actions=4):
         super().__init__()
         self.encoder = SharedEncoder(feat_dim=feat_dim)
         self.correlation = CorrelationModule(
@@ -295,10 +281,6 @@ class TeacherModel(nn.Module):
         self.q2 = QNetwork(cue_dim, num_actions=num_actions)
         self.v = VNetwork(cue_dim)
 
-        self.use_depth_head = use_depth_head
-        if use_depth_head:
-            self.depth_decoder = DepthDecoder(feat_dim=feat_dim)
-
     def encode_and_correlate(self, obs, goal):
         """Encode obs/goal and compute correlation cue (no policy head).
 
@@ -311,41 +293,29 @@ class TeacherModel(nn.Module):
         f_goal = self.encoder(goal)
         return self.correlation(f_goal, f_obs)
 
-    def forward(self, obs, goal, return_depth=False):
+    def forward(self, obs, goal, obs_sonar):
         """
         Args:
-            obs:  (B, 3, 96, 96) current observation
-            goal: (B, 3, 96, 96) goal image
-            return_depth: if True, also return depth prediction
+            obs:       (B, 3, 96, 96) current observation
+            goal:      (B, 3, 96, 96) goal image
+            obs_sonar: (B,) normalized sonar distance [0, 1]
 
         Returns:
             action_logits: (B, num_actions)
-            depth_pred:    (B, 1, 96, 96) if return_depth=True
         """
         f_obs = self.encoder(obs)
         f_goal = self.encoder(goal)
 
         cue = self.correlation(f_goal, f_obs)
-        action_logits = self.policy(cue)
-
-        if return_depth and self.use_depth_head:
-            depth_pred = self.depth_decoder(f_obs)
-            return action_logits, depth_pred
+        action_logits = self.policy(cue, obs_sonar)
 
         return action_logits
 
-    def get_action(self, obs, goal):
-        """Get action for inference (no depth)."""
+    def get_action(self, obs, goal, obs_sonar):
+        """Get action for inference."""
         with torch.no_grad():
-            logits = self.forward(obs, goal, return_depth=False)
+            logits = self.forward(obs, goal, obs_sonar)
             return logits.argmax(dim=-1)
-
-    def strip_depth_head(self):
-        """Remove depth decoder for deployment."""
-        if hasattr(self, "depth_decoder"):
-            del self.depth_decoder
-        self.use_depth_head = False
-        print("[Model] Depth head stripped for deployment")
 
     def count_params(self):
         """Count parameters by component."""
@@ -355,9 +325,8 @@ class TeacherModel(nn.Module):
             p.numel() for p in self.correlation.parameters()
         )
         counts["policy"] = sum(p.numel() for p in self.policy.parameters())
-        if self.use_depth_head:
-            counts["depth_decoder"] = sum(
-                p.numel() for p in self.depth_decoder.parameters()
-            )
+        counts["q1"] = sum(p.numel() for p in self.q1.parameters())
+        counts["q2"] = sum(p.numel() for p in self.q2.parameters())
+        counts["v"] = sum(p.numel() for p in self.v.parameters())
         counts["total"] = sum(counts.values())
         return counts

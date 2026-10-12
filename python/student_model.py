@@ -2,7 +2,8 @@
 student_model.py — Student model for ESP32-S3 deployment.
 
 ~1M parameters. 4-stage hierarchical encoder (MicroDepthAnything architecture)
-producing feature maps, simplified cross-correlation → cue, scaled MLP policy.
+producing feature maps, simplified cross-correlation → cue, scaled MLP policy
+with sonar input.
 
 All sizing controlled by constants below.
 """
@@ -24,11 +25,12 @@ FEAT_SIZE          = 6                      # spatial output (6×6)
 
 # Correlation
 CORR_POOL_SIZE     = 4                      # pool features to 4×4 before corr
-CUE_DIM            = CORR_POOL_SIZE ** 2 * CORR_POOL_SIZE ** 2 + 2  # 16×16 + 2 = 258
+CORR_FLAT_DIM      = CORR_POOL_SIZE ** 2 * CORR_POOL_SIZE ** 2 + 2  # 16×16 + 2 = 258
+CUE_DIM            = CORR_FLAT_DIM + 1      # +1 for sonar → 259
 
 # Policy MLP
 POLICY_HIDDEN      = [512, 256, 128]        # hidden layer widths
-NUM_ACTIONS        = 4                      # F/B/L/R
+NUM_ACTIONS        = 4                      # F/R/L/STOP
 
 # Distillation projector
 PROJ_DIM           = 512                    # teacher cue dimension
@@ -102,11 +104,9 @@ class TinyEncoder(nn.Module):
 
 class SimplifiedCorrelation(nn.Module):
     """
-    Simplified correlation for MCU: 9x9 cross-correlation + 2 L/R scores.
+    Simplified correlation for MCU: NxN cross-correlation + 2 L/R scores.
 
-    Output dim = feat_h² × feat_w² + 2 = 1298 is too large for 6×6.
-    Use pooled correlation: pool features to 4×4 before correlation.
-    Output dim = 4² × 4² + 2 = 258.
+    Output dim = pool_size⁴ + 2 = 258 (before sonar concat).
     """
 
     def __init__(self, feat_dim=None, feat_h=None, feat_w=None, pool_size=4):
@@ -124,7 +124,7 @@ class SimplifiedCorrelation(nn.Module):
             f_goal: (B, C, H, W)  e.g. (B, 1024, 8, 8)
             f_obs:  (B, C, H, W)
         Returns:
-            cue: (B, 258)
+            cue: (B, 258)  — correlation flat + L/R scores
         """
         B = f_goal.size(0)
         ps = self.pool_size  # 4
@@ -166,16 +166,16 @@ class SimplifiedCorrelation(nn.Module):
 
 class TinyPolicy(nn.Module):
     """
-    Scaled MLP policy network.
+    Scaled MLP policy network with sonar input.
 
-    Default: 258 → 512 → 256 → 128 → 4
-    Configurable via hidden layer widths.
+    Default: (258 + 1 sonar) = 259 → 512 → 256 → 128 → 4
+    Sonar is concatenated to the correlation cue before the MLP.
     """
 
     def __init__(self, cue_dim=None, hidden=None, num_actions=None):
         super().__init__()
         if cue_dim is None:
-            cue_dim = CUE_DIM
+            cue_dim = CUE_DIM   # 259 (includes sonar)
         if hidden is None:
             hidden = POLICY_HIDDEN
         if num_actions is None:
@@ -190,6 +190,11 @@ class TinyPolicy(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, cue):
+        """Args:
+            cue: (B, cue_dim) — correlation flat + sonar already concatenated.
+        Returns:
+            (B, num_actions) action logits.
+        """
         return self.net(cue)
 
 
@@ -197,7 +202,7 @@ class StudentModel(nn.Module):
     """
     Complete student model for ESP32-S3 deployment.
 
-    TinyEncoder (weight-shared) → SimplifiedCorrelation → TinyPolicy
+    TinyEncoder (weight-shared) → SimplifiedCorrelation → concat(sonar) → TinyPolicy
     ~1M parameters → ~1MB INT8
     """
 
@@ -210,26 +215,59 @@ class StudentModel(nn.Module):
         self.policy = TinyPolicy(num_actions=num_actions)
 
         # Projection layer for correlation distillation (discarded after training)
-        self.corr_projector = nn.Linear(CUE_DIM, PROJ_DIM)
+        # Projects from CORR_FLAT_DIM (258, before sonar) to teacher cue dim
+        self.corr_projector = nn.Linear(CORR_FLAT_DIM, PROJ_DIM)
 
     def encode(self, x):
         """Encode a single image to feature map."""
         return self.encoder(x)
 
     def get_cue(self, obs, goal):
-        """Compute correlation cue from raw images."""
+        """Compute correlation cue from raw images (without sonar).
+
+        Returns the raw 258-dim correlation vector (before sonar concat).
+        """
         f_obs = self.encoder(obs)
         f_goal = self.encoder(goal)
-        return self.correlation(f_goal, f_obs)
+        return self.correlation(f_goal, f_obs)   # (B, 258)
 
-    def forward(self, obs, goal):
-        """Full forward: returns action logits."""
-        cue = self.get_cue(obs, goal)
+    def forward(self, obs, goal, obs_sonar):
+        """Full forward: returns action logits.
+
+        Args:
+            obs:       (B, 3, 96, 96) current observation
+            goal:      (B, 3, 96, 96) goal image
+            obs_sonar: (B,) normalized sonar distance [0, 1]
+
+        Returns:
+            (B, num_actions) action logits
+        """
+        corr_cue = self.get_cue(obs, goal)                   # (B, 258)
+        cue = torch.cat([corr_cue,
+                         obs_sonar.unsqueeze(-1)], dim=-1)   # (B, 259)
         return self.policy(cue)
 
-    def project_cue(self, cue):
-        """Project cue to teacher dim for distillation matching."""
-        return self.corr_projector(cue)
+    def forward_with_cue(self, corr_cue, obs_sonar):
+        """Forward from pre-computed correlation cue (used in distillation).
+
+        Args:
+            corr_cue:  (B, 258) raw correlation output
+            obs_sonar: (B,) normalized sonar distance [0, 1]
+
+        Returns:
+            (B, num_actions) action logits
+        """
+        cue = torch.cat([corr_cue,
+                         obs_sonar.unsqueeze(-1)], dim=-1)   # (B, 259)
+        return self.policy(cue)
+
+    def project_cue(self, corr_cue):
+        """Project raw correlation cue to teacher dim for distillation matching.
+
+        Args:
+            corr_cue: (B, 258) — raw correlation output (no sonar).
+        """
+        return self.corr_projector(corr_cue)
 
     def get_deploy_params(self):
         """Count only deployment parameters (exclude projector)."""
@@ -267,6 +305,7 @@ def print_model_summary():
     print(f"  ENC_CHANNELS  = {ENC_CHANNELS}")
     print(f"  ENC_BLOCKS    = {ENC_BLOCKS}")
     print(f"  POLICY_HIDDEN = {POLICY_HIDDEN}")
+    print(f"  CUE_DIM       = {CUE_DIM} (corr:{CORR_FLAT_DIM} + sonar:1)")
 
 
 if __name__ == "__main__":
@@ -276,6 +315,14 @@ if __name__ == "__main__":
     model = StudentModel()
     obs = torch.randn(2, 3, 96, 96)
     goal = torch.randn(2, 3, 96, 96)
-    logits = model(obs, goal)
-    print(f"\nForward pass: obs {obs.shape} → logits {logits.shape}")
+    sonar = torch.rand(2)
+    logits = model(obs, goal, sonar)
+    print(f"\nForward pass: obs {obs.shape} + sonar {sonar.shape} → logits {logits.shape}")
     print(f"Logits: {logits}")
+
+    # Test distillation helpers
+    corr_cue = model.get_cue(obs, goal)
+    proj = model.project_cue(corr_cue)
+    print(f"Correlation cue: {corr_cue.shape}")
+    print(f"Projected cue:   {proj.shape}")
+    print(f"forward_with_cue: {model.forward_with_cue(corr_cue, sonar).shape}")
