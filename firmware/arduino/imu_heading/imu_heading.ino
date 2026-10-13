@@ -38,7 +38,7 @@ static float heading = 0.0f;
 static unsigned long last_micros = 0;
 static bool mag_available = false;
 static bool prox_available = false;
-static int  proximity = 0;        /* 0=far, 255=close */
+static int  proximity = 255;       /* 0=close, 255=far */
 
 /**
  * @brief Compute magnetometer heading from raw readings.
@@ -146,10 +146,9 @@ void loop() {
     /* Read APDS9960 proximity (non-blocking) */
     if (prox_available && APDS.proximityAvailable()) {
         proximity = APDS.readProximity();
-        /* APDS9960 library returns 0=close, 255=far on some versions.
-         * The Arduino_APDS9960 library for Rev2 returns 0=far, 255=close.
-         * Verify with Serial Monitor and invert if needed:
-         *   proximity = 255 - APDS.readProximity();  // uncomment if inverted
+        /* APDS9960 library returns 0=close, 255=far.
+         * If your board returns the opposite, invert:
+         *   proximity = 255 - APDS.readProximity();
          */
     }
 
@@ -167,7 +166,7 @@ void loop() {
         Serial.print(heading, 2);
         Serial.print("  Proximity: ");
         Serial.print(proximity);
-        if (proximity > 200) Serial.print(" [CLOSE!]");
+        if (proximity < 50) Serial.print(" [CLOSE!]");
         Serial.println();
         dbg_counter = 0;
     }

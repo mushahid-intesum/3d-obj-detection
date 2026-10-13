@@ -79,9 +79,9 @@
  *  the proximity value [0–255] alongside the heading over UART.
  *  No extra GPIO pins needed — piggybacks on IMU UART.
  *
- *  Proximity: 0 = far, 255 = close (higher = nearer obstacle).
+ *  Proximity: 0 = close (obstacle), 255 = far (clear).
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define PROX_THRESHOLD       200    /* obstacle if proximity > this (0–255) */
+#define PROX_THRESHOLD       50     /* obstacle if proximity < this (0–255) */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Exploration Parameters

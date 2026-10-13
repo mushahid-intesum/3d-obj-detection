@@ -39,7 +39,7 @@ void stream_accept_start(void);
  *   [8..11]  timestep        (uint32, LE, index within session)
  *   [12]     action_taken    (uint8, 0=FWD, 1=TURN_R, 2=TURN_L, 3=STOP)
  *   [13]     prox_blocked    (uint8, 0=clear, 1=blocked)
- *   [14..17] proximity       (float32, LE, APDS9960 value 0–255)
+ *   [14..17] proximity       (float32, LE, APDS9960 value 0–255, 0=close 255=far)
  *   [18..21] heading_deg     (float32, LE, 0-360 from IMU)
  *   [22..25] jpeg_len        (uint32, LE)
  *   [26..N]  jpeg_data       (variable length)

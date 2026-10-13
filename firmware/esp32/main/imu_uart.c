@@ -34,7 +34,7 @@ static const char *TAG = "imu";
 
 /* Thread-safe heading + proximity storage */
 static volatile float   s_heading   = -1.0f;
-static volatile uint8_t s_proximity = 0;
+static volatile uint8_t s_proximity = 255;   /* default: far (no reading yet) */
 static volatile bool    s_ready     = false;
 static volatile uint32_t s_update_count = 0;
 
@@ -168,7 +168,7 @@ uint8_t imu_get_proximity(void)
 
 bool imu_proximity_blocked(void)
 {
-    return s_proximity > PROX_THRESHOLD;
+    return s_proximity < PROX_THRESHOLD;
 }
 
 bool imu_is_ready(void)

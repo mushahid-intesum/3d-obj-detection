@@ -4,7 +4,7 @@
  *
  * The Arduino sends "H:<heading>,P:<proximity>\n" at 50Hz over UART.
  *   heading   = 0.00–359.99 degrees (from BMI270 + BMM150)
- *   proximity = 0–255 (from APDS9960, 0=far, 255=close)
+ *   proximity = 0–255 (from APDS9960, 0=close, 255=far)
  *
  * This driver parses both values in a background task and provides
  * thread-safe access to the latest readings.
@@ -30,14 +30,14 @@ float imu_get_heading(void);
 
 /**
  * @brief Get the latest APDS9960 proximity reading.
- * @return Proximity value [0, 255]. 0 = far, 255 = close.
- *         Returns 0 if no reading yet.
+ * @return Proximity value [0, 255]. 0 = close, 255 = far.
+ *         Returns 255 if no reading yet.
  */
 uint8_t imu_get_proximity(void);
 
 /**
  * @brief Check if proximity indicates an obstacle.
- * @return true if proximity > PROX_THRESHOLD.
+ * @return true if proximity < PROX_THRESHOLD.
  */
 bool imu_proximity_blocked(void);
 

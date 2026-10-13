@@ -42,7 +42,7 @@ def load_merged_dataset(merged_dir):
 
     print(f"[*] Loaded {len(frames)} frames, {len(segments)} segments")
     print(f"    proximity: mean={proximity.mean():.1f}, "
-          f"blocked={np.mean(proximity > 200.0)*100:.1f}%")
+          f"blocked={np.mean(proximity < 50.0)*100:.1f}%")
     return frames, actions, headings, proximity, segments
 
 

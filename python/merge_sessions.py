@@ -163,7 +163,7 @@ def main():
                 trajectory[i].get("heading", 0.0) for i in range(seg_start, seg_end)
             ], dtype=np.float32)
             seg_proximity = np.array([
-                trajectory[i].get("proximity", 0.0) for i in range(seg_start, seg_end)
+                trajectory[i].get("proximity", 255.0) for i in range(seg_start, seg_end)
             ], dtype=np.float32)
 
             all_segments.append({
@@ -238,7 +238,7 @@ def main():
             "mean": round(float(all_proximity.mean()), 1),
             "min": round(float(all_proximity.min()), 1),
             "max": round(float(all_proximity.max()), 1),
-            "blocked_pct": round(float(np.mean(all_proximity > 200.0)) * 100, 1),
+            "blocked_pct": round(float(np.mean(all_proximity < 50.0)) * 100, 1),
         },
     }
     with open(os.path.join(OUTPUT_DIR, "dataset_meta.json"), "w") as f:
