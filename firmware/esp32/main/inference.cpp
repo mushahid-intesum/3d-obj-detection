@@ -5,11 +5,11 @@
  * Runs the full student navigation model on ESP32-S3:
  *   1. TinyEncoder (TFLite INT8) on obs/goal images → feature maps
  *   2. SimplifiedCorrelation (C implementation) → 258-dim cue
- *   3. TinyPolicy (TFLite INT8) on cue + sonar → 4 action logits
+ *   3. TinyPolicy (TFLite INT8) on cue + proximity → 4 action logits
  *
  * Two TFLite models are embedded as C arrays:
  *   - encoder_model[] from encoder_model.h  (obs/goal → features)
- *   - policy_model[]  from policy_model.h   (cue+sonar → logits)
+ *   - policy_model[]  from policy_model.h   (cue+proximity → logits)
  *
  * When no models are embedded (INFERENCE_HAS_MODEL == 0),
  * inference_init() returns ESP_ERR_NOT_FOUND → collection mode.
@@ -53,8 +53,8 @@ static const char *TAG = "inference";
 #define CORR_POOL_SIZE   4
 #define CORR_POSITIONS   (CORR_POOL_SIZE * CORR_POOL_SIZE)   /* 16 */
 #define CORR_FLAT_DIM    (CORR_POSITIONS * CORR_POSITIONS + 2)  /* 258 */
-#define CUE_DIM          (CORR_FLAT_DIM + 1)                 /* 259 = corr + sonar */
-#define SONAR_NORM_MAX   200.0f
+#define CUE_DIM          (CORR_FLAT_DIM + 1)                 /* 259 = corr + proximity */
+#define PROX_NORM_MAX    255.0f
 
 /* ── Encoder feature map dimensions (must match TinyEncoder output) ── */
 #define FEAT_DIM         1024
@@ -405,12 +405,12 @@ esp_err_t inference_set_goal(const uint8_t *goal_img)
 }
 
 
-esp_err_t inference_run_policy(const uint8_t *obs_img, float sonar_cm,
+esp_err_t inference_run_policy(const uint8_t *obs_img, float proximity,
                                int8_t *action_logits)
 {
 #if !INFERENCE_HAS_MODEL
     (void)obs_img;
-    (void)sonar_cm;
+    (void)proximity;
     (void)action_logits;
     return ESP_ERR_INVALID_STATE;
 #else
@@ -446,11 +446,11 @@ esp_err_t inference_run_policy(const uint8_t *obs_img, float sonar_cm,
     compute_correlation(s_goal_pooled, obs_pooled, cue);
     free(obs_pooled);
 
-    /* 4. Append normalized sonar → cue[258] */
-    float sonar_norm = sonar_cm / SONAR_NORM_MAX;
-    if (sonar_norm > 1.0f) sonar_norm = 1.0f;
-    if (sonar_norm < 0.0f) sonar_norm = 0.0f;
-    cue[CORR_FLAT_DIM] = sonar_norm;
+    /* 4. Append normalized proximity → cue[258] */
+    float prox_norm = proximity / PROX_NORM_MAX;
+    if (prox_norm > 1.0f) prox_norm = 1.0f;
+    if (prox_norm < 0.0f) prox_norm = 0.0f;
+    cue[CORR_FLAT_DIM] = prox_norm;
 
     /* 5. Run policy MLP: cue[259] → logits[4] */
     TfLiteTensor *pol_input = s_pol_interp->input(0);

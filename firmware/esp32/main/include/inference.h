@@ -3,7 +3,7 @@
  * @brief TFLite Micro inference — student policy on single board.
  *
  * The student model runs end-to-end on the ESP32-S3:
- *   TinyEncoder(obs) + TinyEncoder(goal) → Correlation → Policy(cue, sonar) → 4 action logits
+ *   TinyEncoder(obs) + TinyEncoder(goal) → Correlation → Policy(cue, proximity) → 4 action logits
  *
  * During collection mode (no model flashed), inference_init() returns
  * ESP_ERR_NOT_FOUND, causing main.c to use the pink noise explorer.
@@ -28,19 +28,19 @@ extern "C" {
 esp_err_t inference_init(void);
 
 /**
- * @brief Run the full student model: image + sonar → action logits.
+ * @brief Run the full student model: image + proximity → action logits.
  *
  * In the future, this will:
  *   1. Run TinyEncoder on obs image → obs features
  *   2. Correlate obs features with cached goal features → cue
- *   3. Run TinyPolicy(cue, sonar_cm) → action logits
+ *   3. Run TinyPolicy(cue, proximity) → action logits
  *
  * @param[in]  obs_img       96×96×3 uint8 RGB image (27648 bytes).
- * @param[in]  sonar_cm      Sonar distance in cm (float).
+ * @param[in]  proximity     APDS9960 proximity value (0–255 as float).
  * @param[out] action_logits 4 int8 logits (higher = better action).
  * @return ESP_OK on success.
  */
-esp_err_t inference_run_policy(const uint8_t *obs_img, float sonar_cm,
+esp_err_t inference_run_policy(const uint8_t *obs_img, float proximity,
                                int8_t *action_logits);
 
 /**

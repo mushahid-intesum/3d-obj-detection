@@ -33,13 +33,13 @@ void stream_accept_start(void);
 /**
  * @brief Send a JPEG frame + sensor metadata to the laptop.
  *
- * Packet format (v5 — sonar + IMU):
+ * Packet format (v5 — proximity + IMU):
  *   [0..3]   magic:          0x494D4735 ("IMG5")
  *   [4..7]   frame_id        (uint32, LE, monotonic)
  *   [8..11]  timestep        (uint32, LE, index within session)
  *   [12]     action_taken    (uint8, 0=FWD, 1=TURN_R, 2=TURN_L, 3=STOP)
- *   [13]     sonar_blocked   (uint8, 0=clear, 1=blocked)
- *   [14..17] sonar_cm        (float32, LE, raw distance in cm)
+ *   [13]     prox_blocked    (uint8, 0=clear, 1=blocked)
+ *   [14..17] proximity       (float32, LE, APDS9960 value 0–255)
  *   [18..21] heading_deg     (float32, LE, 0-360 from IMU)
  *   [22..25] jpeg_len        (uint32, LE)
  *   [26..N]  jpeg_data       (variable length)
@@ -47,8 +47,8 @@ void stream_accept_start(void);
  * @return ESP_OK on success, ESP_FAIL if client disconnected.
  */
 esp_err_t stream_send_frame(uint32_t frame_id, uint32_t timestep,
-                            uint8_t action_taken, uint8_t sonar_blocked,
-                            float sonar_cm, float heading_deg,
+                            uint8_t action_taken, uint8_t prox_blocked,
+                            float proximity, float heading_deg,
                             const uint8_t *jpeg_buf, uint32_t jpeg_len);
 
 /**
@@ -56,7 +56,7 @@ esp_err_t stream_send_frame(uint32_t frame_id, uint32_t timestep,
  */
 bool stream_is_connected(void);
 
-/** Packet magic number "IMG5" (v5 — sonar + IMU) */
+/** Packet magic number "IMG5" (v5 — proximity + IMU) */
 #define STREAM_MAGIC  0x494D4735
 
 /** IMG5 header size in bytes. */

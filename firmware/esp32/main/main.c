@@ -3,10 +3,10 @@
  * @brief Single-board main — dual-mode: collection + navigation.
  *
  * Collection mode (default — no policy model):
- *   Pink noise explorer → sonar obstacle override → motors → stream to laptop
+ *   Pink noise explorer → proximity obstacle override → motors → stream to laptop
  *
  * Navigation mode (when policy model is flashed):
- *   Camera → student model inference → sonar safety override → motors
+ *   Camera → student model inference → proximity safety override → motors
  *
  * Mode is auto-detected based on whether policy model is embedded.
  */
@@ -22,7 +22,7 @@
 
 #include "inference.h"
 
-#include "sonar.h"
+
 
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -61,23 +61,23 @@ static void exploration_task(void *pvParam)
         float heading_before = imu_get_heading();
         if (heading_before < 0.0f) heading_before = 0.0f;
 
-        /* ── 2. Read sonar distance ── */
-        float sonar_cm = sonar_get_distance_cm();
-        uint8_t sonar_blocked = (sonar_cm < SONAR_THRESHOLD_CM) ? 1 : 0;
+        /* ── 2. Read proximity from Arduino APDS9960 ── */
+        uint8_t proximity = imu_get_proximity();
+        uint8_t prox_blocked = imu_proximity_blocked() ? 1 : 0;
 
         /* ── 3. Apply obstacle override ── */
         uint8_t final_action = planned_action;
-        if (sonar_blocked && final_action == ACTION_FORWARD) {
+        if (prox_blocked && final_action == ACTION_FORWARD) {
             final_action = (rand() % 2 == 0) ? ACTION_TURN_RIGHT : ACTION_TURN_LEFT;
-            ESP_LOGW(TAG, "Sonar override! dist=%.1f cm", sonar_cm);
+            ESP_LOGW(TAG, "Proximity override! prox=%d", proximity);
         }
 
         /* ── 4. Execute action (blocking — 500ms burst or IMU turn) ── */
-        ESP_LOGI(TAG, "[pre]  heading=%.1f° action=%s sonar=%.1f%s",
+        ESP_LOGI(TAG, "[pre]  heading=%.1f° action=%s prox=%d%s",
                  heading_before,
                  final_action < 4 ? ACTION_NAMES[final_action] : "?",
-                 sonar_cm,
-                 sonar_blocked ? " BLOCKED" : "");
+                 proximity,
+                 prox_blocked ? " BLOCKED" : "");
 
         motor_execute_action(final_action);
 
@@ -92,10 +92,10 @@ static void exploration_task(void *pvParam)
         if (delta < -180.0f) delta += 360.0f;
 
         uint32_t step = explorer_get_step();
-        ESP_LOGI(TAG, "[post] step=%lu heading=%.1f° Δ=%.1f° action=%s sonar=%.1f",
+        ESP_LOGI(TAG, "[post] step=%lu heading=%.1f° Δ=%.1f° action=%s prox=%d",
                  (unsigned long)step, heading_after, delta,
                  final_action < 4 ? ACTION_NAMES[final_action] : "?",
-                 sonar_cm);
+                 proximity);
 
         /* ── 7. Capture post-action frame ── */
         camera_fb_t *fb = camera_capture_frame();
@@ -108,8 +108,8 @@ static void exploration_task(void *pvParam)
         /* ── 8. Stream to laptop (best-effort — skip if no client) ── */
         if (stream_is_connected()) {
             stream_send_frame(
-                frame_id, timestep, final_action, sonar_blocked,
-                sonar_cm, heading_after, fb->buf, fb->len
+                frame_id, timestep, final_action, prox_blocked,
+                (float)proximity, heading_after, fb->buf, fb->len
             );
         }
 
@@ -154,9 +154,8 @@ void app_main(void)
     ESP_LOGI(TAG, "[3/5] Initializing IMU UART...");
     ESP_ERROR_CHECK(imu_init());
 
-    /* ── 4. Sonar ── */
-    ESP_LOGI(TAG, "[4/5] Initializing HC-SR04 sonar...");
-    ESP_ERROR_CHECK(sonar_init());
+    /* ── 4. Proximity (via Arduino UART — already initialized with IMU) ── */
+    ESP_LOGI(TAG, "[4/5] Proximity sensor active via Arduino UART");
 
     /* ── 5. WiFi ── */
     ESP_LOGI(TAG, "[5/5] Connecting to WiFi...");

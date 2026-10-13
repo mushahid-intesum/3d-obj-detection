@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-models.py — Teacher model for ImageNav with sonar input.
+models.py — Teacher model for ImageNav with proximity input.
 
 Components:
   - SharedEncoder:       ResNet producing 12×12 feature maps
   - CorrelationModule:   RSRNav-style cross-correlation
-  - PolicyNetwork:       Correlation cue + sonar → action logits
-  - QNetwork / VNetwork: IQL value heads (cue + sonar aware)
+  - PolicyNetwork:       Correlation cue + proximity → action logits
+  - QNetwork / VNetwork: IQL value heads (cue + proximity aware)
   - TeacherModel:        Full pipeline: encoder → correlation → action
 """
 
@@ -170,9 +170,9 @@ class CorrelationModule(nn.Module):
 # ─── Policy Head ───
 
 class PolicyNetwork(nn.Module):
-    """Maps correlation cue + sonar → action logits.
+    """Maps correlation cue + proximity → action logits.
 
-    Sonar is concatenated as a normalized scalar [0, 1] to the cue vector
+    Proximity is concatenated as a normalized scalar [0, 1] to the cue vector
     before the MLP, adding one extra input dimension.
     """
 
@@ -184,14 +184,14 @@ class PolicyNetwork(nn.Module):
             nn.Linear(128, num_actions),
         )
 
-    def forward(self, cue, obs_sonar):
+    def forward(self, cue, obs_proximity):
         """Args:
             cue:       (B, cue_dim) correlation cue
-            obs_sonar: (B,) normalized sonar distance [0, 1]
+            obs_proximity: (B,) normalized proximity distance [0, 1]
         Returns:
             (B, num_actions) action logits
         """
-        x = torch.cat([cue, obs_sonar.unsqueeze(-1)], dim=-1)
+        x = torch.cat([cue, obs_proximity.unsqueeze(-1)], dim=-1)
         return self.net(x)
 
 
@@ -200,7 +200,7 @@ class PolicyNetwork(nn.Module):
 class QNetwork(nn.Module):
     """State-action Q-value estimator for IQL.
 
-    Takes correlation cue, sonar scalar, and discrete action index,
+    Takes correlation cue, proximity scalar, and discrete action index,
     returns scalar Q-value.
     """
 
@@ -213,16 +213,16 @@ class QNetwork(nn.Module):
             nn.Linear(128, 1),
         )
 
-    def forward(self, cue, obs_sonar, actions):
+    def forward(self, cue, obs_proximity, actions):
         """Args:
             cue:       (B, cue_dim) correlation cue
-            obs_sonar: (B,) normalized sonar distance [0, 1]
+            obs_proximity: (B,) normalized proximity distance [0, 1]
             actions:   (B,) int64 action indices
         Returns:
             (B,) scalar Q-values
         """
         a_emb = self.action_embed(actions)                # (B, 32)
-        x = torch.cat([cue, obs_sonar.unsqueeze(-1),
+        x = torch.cat([cue, obs_proximity.unsqueeze(-1),
                         a_emb], dim=-1)                    # (B, cue_dim+1+32)
         return self.net(x).squeeze(-1)                     # (B,)
 
@@ -232,7 +232,7 @@ class QNetwork(nn.Module):
 class VNetwork(nn.Module):
     """State value estimator for IQL.
 
-    Takes correlation cue + sonar, returns scalar V-value.
+    Takes correlation cue + proximity, returns scalar V-value.
     """
 
     def __init__(self, cue_dim=512, hidden=256):
@@ -243,14 +243,14 @@ class VNetwork(nn.Module):
             nn.Linear(128, 1),
         )
 
-    def forward(self, cue, obs_sonar):
+    def forward(self, cue, obs_proximity):
         """Args:
             cue:       (B, cue_dim) correlation cue
-            obs_sonar: (B,) normalized sonar distance [0, 1]
+            obs_proximity: (B,) normalized proximity distance [0, 1]
         Returns:
             (B,) scalar V-values
         """
-        x = torch.cat([cue, obs_sonar.unsqueeze(-1)], dim=-1)
+        x = torch.cat([cue, obs_proximity.unsqueeze(-1)], dim=-1)
         return self.net(x).squeeze(-1)
 
 
@@ -258,12 +258,12 @@ class VNetwork(nn.Module):
 
 class TeacherModel(nn.Module):
     """
-    Teacher model for image-goal navigation with sonar input.
+    Teacher model for image-goal navigation with proximity input.
 
     Architecture:
       obs  → Encoder → f_obs ─┬→ Correlation(f_goal, f_obs) → cue ──┐
       goal → Encoder → f_goal ┘                                      │
-      sonar_cm (normalized) ─────────────────────────────────────→ cat → Policy → actions
+      proximity (normalized) ─────────────────────────────────────→ cat → Policy → actions
                                                                        → Q1, Q2, V (IQL)
     """
 
@@ -293,12 +293,12 @@ class TeacherModel(nn.Module):
         f_goal = self.encoder(goal)
         return self.correlation(f_goal, f_obs)
 
-    def forward(self, obs, goal, obs_sonar):
+    def forward(self, obs, goal, obs_proximity):
         """
         Args:
             obs:       (B, 3, 96, 96) current observation
             goal:      (B, 3, 96, 96) goal image
-            obs_sonar: (B,) normalized sonar distance [0, 1]
+            obs_proximity: (B,) normalized proximity distance [0, 1]
 
         Returns:
             action_logits: (B, num_actions)
@@ -307,14 +307,14 @@ class TeacherModel(nn.Module):
         f_goal = self.encoder(goal)
 
         cue = self.correlation(f_goal, f_obs)
-        action_logits = self.policy(cue, obs_sonar)
+        action_logits = self.policy(cue, obs_proximity)
 
         return action_logits
 
-    def get_action(self, obs, goal, obs_sonar):
+    def get_action(self, obs, goal, obs_proximity):
         """Get action for inference."""
         with torch.no_grad():
-            logits = self.forward(obs, goal, obs_sonar)
+            logits = self.forward(obs, goal, obs_proximity)
             return logits.argmax(dim=-1)
 
     def count_params(self):

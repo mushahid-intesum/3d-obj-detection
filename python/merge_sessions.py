@@ -12,7 +12,7 @@ Output:
       dataset.npz            ← frames (N, 96, 96, 3) uint8
                                 actions (N,) int32
                                 headings (N,) float32
-                                sonar_cm (N,) float32
+                                proximity (N,) float32
       segments.json           ← segment boundaries [{start, end, length, source}]
       dataset_meta.json       ← summary metadata
 
@@ -162,15 +162,15 @@ def main():
             seg_headings = np.array([
                 trajectory[i].get("heading", 0.0) for i in range(seg_start, seg_end)
             ], dtype=np.float32)
-            seg_sonar = np.array([
-                trajectory[i].get("sonar_cm", 200.0) for i in range(seg_start, seg_end)
+            seg_proximity = np.array([
+                trajectory[i].get("proximity", 0.0) for i in range(seg_start, seg_end)
             ], dtype=np.float32)
 
             all_segments.append({
                 "frames": seg_frames,
                 "actions": seg_actions,
                 "headings": seg_headings,
-                "sonar_cm": seg_sonar,
+                "proximity": seg_proximity,
                 "length": seg_len,
                 "source": os.path.basename(sess_dir),
             })
@@ -187,7 +187,7 @@ def main():
     all_frames_list = []
     all_actions_list = []
     all_headings_list = []
-    all_sonar_list = []
+    all_proximity_list = []
     offset = 0
 
     for seg in all_segments:
@@ -195,7 +195,7 @@ def main():
         all_frames_list.append(seg["frames"])
         all_actions_list.append(seg["actions"])
         all_headings_list.append(seg["headings"])
-        all_sonar_list.append(seg["sonar_cm"])
+        all_proximity_list.append(seg["proximity"])
         segment_index.append({
             "start": offset,
             "end": offset + seg_len,
@@ -207,7 +207,7 @@ def main():
     all_frames = np.concatenate(all_frames_list, axis=0)     # (N, 96, 96, 3)
     all_actions = np.concatenate(all_actions_list, axis=0)    # (N,)
     all_headings = np.concatenate(all_headings_list, axis=0)  # (N,)
-    all_sonar = np.concatenate(all_sonar_list, axis=0)        # (N,)
+    all_proximity = np.concatenate(all_proximity_list, axis=0)        # (N,)
 
     # Save
     print(f"[*] Saving to {OUTPUT_DIR}...")
@@ -217,7 +217,7 @@ def main():
         frames=all_frames,
         actions=all_actions,
         headings=all_headings,
-        sonar_cm=all_sonar,
+        proximity=all_proximity,
     )
 
     with open(os.path.join(OUTPUT_DIR, "segments.json"), "w") as f:
@@ -234,11 +234,11 @@ def main():
         "sessions": [os.path.basename(s) for s in sessions],
         "action_distribution": action_counts,
         "img_shape": [96, 96, 3],
-        "sonar_stats": {
-            "mean_cm": round(float(all_sonar.mean()), 1),
-            "min_cm": round(float(all_sonar.min()), 1),
-            "max_cm": round(float(all_sonar.max()), 1),
-            "blocked_pct": round(float(np.mean(all_sonar < 25.0)) * 100, 1),
+        "proximity_stats": {
+            "mean": round(float(all_proximity.mean()), 1),
+            "min": round(float(all_proximity.min()), 1),
+            "max": round(float(all_proximity.max()), 1),
+            "blocked_pct": round(float(np.mean(all_proximity > 200.0)) * 100, 1),
         },
     }
     with open(os.path.join(OUTPUT_DIR, "dataset_meta.json"), "w") as f:

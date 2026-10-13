@@ -3,7 +3,7 @@ student_model.py — Student model for ESP32-S3 deployment.
 
 ~1M parameters. 4-stage hierarchical encoder (MicroDepthAnything architecture)
 producing feature maps, simplified cross-correlation → cue, scaled MLP policy
-with sonar input.
+with proximity input.
 
 All sizing controlled by constants below.
 """
@@ -26,7 +26,7 @@ FEAT_SIZE          = 6                      # spatial output (6×6)
 # Correlation
 CORR_POOL_SIZE     = 4                      # pool features to 4×4 before corr
 CORR_FLAT_DIM      = CORR_POOL_SIZE ** 2 * CORR_POOL_SIZE ** 2 + 2  # 16×16 + 2 = 258
-CUE_DIM            = CORR_FLAT_DIM + 1      # +1 for sonar → 259
+CUE_DIM            = CORR_FLAT_DIM + 1      # +1 for proximity → 259
 
 # Policy MLP
 POLICY_HIDDEN      = [512, 256, 128]        # hidden layer widths
@@ -106,7 +106,7 @@ class SimplifiedCorrelation(nn.Module):
     """
     Simplified correlation for MCU: NxN cross-correlation + 2 L/R scores.
 
-    Output dim = pool_size⁴ + 2 = 258 (before sonar concat).
+    Output dim = pool_size⁴ + 2 = 258 (before proximity concat).
     """
 
     def __init__(self, feat_dim=None, feat_h=None, feat_w=None, pool_size=4):
@@ -166,16 +166,16 @@ class SimplifiedCorrelation(nn.Module):
 
 class TinyPolicy(nn.Module):
     """
-    Scaled MLP policy network with sonar input.
+    Scaled MLP policy network with proximity input.
 
-    Default: (258 + 1 sonar) = 259 → 512 → 256 → 128 → 4
-    Sonar is concatenated to the correlation cue before the MLP.
+    Default: (258 + 1 proximity) = 259 → 512 → 256 → 128 → 4
+    Proximity is concatenated to the correlation cue before the MLP.
     """
 
     def __init__(self, cue_dim=None, hidden=None, num_actions=None):
         super().__init__()
         if cue_dim is None:
-            cue_dim = CUE_DIM   # 259 (includes sonar)
+            cue_dim = CUE_DIM   # 259 (includes proximity)
         if hidden is None:
             hidden = POLICY_HIDDEN
         if num_actions is None:
@@ -191,7 +191,7 @@ class TinyPolicy(nn.Module):
 
     def forward(self, cue):
         """Args:
-            cue: (B, cue_dim) — correlation flat + sonar already concatenated.
+            cue: (B, cue_dim) — correlation flat + proximity already concatenated.
         Returns:
             (B, num_actions) action logits.
         """
@@ -202,7 +202,7 @@ class StudentModel(nn.Module):
     """
     Complete student model for ESP32-S3 deployment.
 
-    TinyEncoder (weight-shared) → SimplifiedCorrelation → concat(sonar) → TinyPolicy
+    TinyEncoder (weight-shared) → SimplifiedCorrelation → concat(proximity) → TinyPolicy
     ~1M parameters → ~1MB INT8
     """
 
@@ -215,7 +215,7 @@ class StudentModel(nn.Module):
         self.policy = TinyPolicy(num_actions=num_actions)
 
         # Projection layer for correlation distillation (discarded after training)
-        # Projects from CORR_FLAT_DIM (258, before sonar) to teacher cue dim
+        # Projects from CORR_FLAT_DIM (258, before proximity) to teacher cue dim
         self.corr_projector = nn.Linear(CORR_FLAT_DIM, PROJ_DIM)
 
     def encode(self, x):
@@ -223,49 +223,49 @@ class StudentModel(nn.Module):
         return self.encoder(x)
 
     def get_cue(self, obs, goal):
-        """Compute correlation cue from raw images (without sonar).
+        """Compute correlation cue from raw images (without proximity).
 
-        Returns the raw 258-dim correlation vector (before sonar concat).
+        Returns the raw 258-dim correlation vector (before proximity concat).
         """
         f_obs = self.encoder(obs)
         f_goal = self.encoder(goal)
         return self.correlation(f_goal, f_obs)   # (B, 258)
 
-    def forward(self, obs, goal, obs_sonar):
+    def forward(self, obs, goal, obs_proximity):
         """Full forward: returns action logits.
 
         Args:
             obs:       (B, 3, 96, 96) current observation
             goal:      (B, 3, 96, 96) goal image
-            obs_sonar: (B,) normalized sonar distance [0, 1]
+            obs_proximity: (B,) normalized proximity distance [0, 1]
 
         Returns:
             (B, num_actions) action logits
         """
         corr_cue = self.get_cue(obs, goal)                   # (B, 258)
         cue = torch.cat([corr_cue,
-                         obs_sonar.unsqueeze(-1)], dim=-1)   # (B, 259)
+                         obs_proximity.unsqueeze(-1)], dim=-1)   # (B, 259)
         return self.policy(cue)
 
-    def forward_with_cue(self, corr_cue, obs_sonar):
+    def forward_with_cue(self, corr_cue, obs_proximity):
         """Forward from pre-computed correlation cue (used in distillation).
 
         Args:
             corr_cue:  (B, 258) raw correlation output
-            obs_sonar: (B,) normalized sonar distance [0, 1]
+            obs_proximity: (B,) normalized proximity distance [0, 1]
 
         Returns:
             (B, num_actions) action logits
         """
         cue = torch.cat([corr_cue,
-                         obs_sonar.unsqueeze(-1)], dim=-1)   # (B, 259)
+                         obs_proximity.unsqueeze(-1)], dim=-1)   # (B, 259)
         return self.policy(cue)
 
     def project_cue(self, corr_cue):
         """Project raw correlation cue to teacher dim for distillation matching.
 
         Args:
-            corr_cue: (B, 258) — raw correlation output (no sonar).
+            corr_cue: (B, 258) — raw correlation output (no proximity).
         """
         return self.corr_projector(corr_cue)
 
@@ -305,7 +305,7 @@ def print_model_summary():
     print(f"  ENC_CHANNELS  = {ENC_CHANNELS}")
     print(f"  ENC_BLOCKS    = {ENC_BLOCKS}")
     print(f"  POLICY_HIDDEN = {POLICY_HIDDEN}")
-    print(f"  CUE_DIM       = {CUE_DIM} (corr:{CORR_FLAT_DIM} + sonar:1)")
+    print(f"  CUE_DIM       = {CUE_DIM} (corr:{CORR_FLAT_DIM} + proximity:1)")
 
 
 if __name__ == "__main__":
@@ -315,9 +315,9 @@ if __name__ == "__main__":
     model = StudentModel()
     obs = torch.randn(2, 3, 96, 96)
     goal = torch.randn(2, 3, 96, 96)
-    sonar = torch.rand(2)
-    logits = model(obs, goal, sonar)
-    print(f"\nForward pass: obs {obs.shape} + sonar {sonar.shape} → logits {logits.shape}")
+    proximity = torch.rand(2)
+    logits = model(obs, goal, proximity)
+    print(f"\nForward pass: obs {obs.shape} + proximity {proximity.shape} → logits {logits.shape}")
     print(f"Logits: {logits}")
 
     # Test distillation helpers
@@ -325,4 +325,4 @@ if __name__ == "__main__":
     proj = model.project_cue(corr_cue)
     print(f"Correlation cue: {corr_cue.shape}")
     print(f"Projected cue:   {proj.shape}")
-    print(f"forward_with_cue: {model.forward_with_cue(corr_cue, sonar).shape}")
+    print(f"forward_with_cue: {model.forward_with_cue(corr_cue, proximity).shape}")

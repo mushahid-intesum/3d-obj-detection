@@ -1,9 +1,9 @@
 /**
  * @file imu_uart.c
- * @brief IMU heading reader via UART from Arduino Nano 33 BLE Rev2.
+ * @brief IMU heading + proximity reader via UART from Arduino Nano BLE Sense Rev2.
  *
- * Parses "H:<heading>\n" lines from UART1 in a background task.
- * Provides thread-safe access to the latest heading value.
+ * Parses "H:<heading>,P:<proximity>\n" lines from UART1 in a background task.
+ * Provides thread-safe access to the latest heading and proximity values.
  *
  * Wiring:
  *   Arduino TX → ESP32 GPIO 3  (UART1 RX)
@@ -32,13 +32,17 @@ static const char *TAG = "imu";
 #define IMU_UART_BUF_SIZE 256
 #define IMU_LINE_BUF_SIZE 64
 
-/* Thread-safe heading storage */
-static volatile float s_heading = -1.0f;
-static volatile bool  s_ready   = false;
+/* Thread-safe heading + proximity storage */
+static volatile float   s_heading   = -1.0f;
+static volatile uint8_t s_proximity = 0;
+static volatile bool    s_ready     = false;
 static volatile uint32_t s_update_count = 0;
 
 /**
- * @brief Background task: reads UART lines and parses heading.
+ * @brief Background task: reads UART lines and parses heading + proximity.
+ *
+ * Expected line format: "H:<heading>,P:<proximity>\n"
+ * Also accepts legacy "H:<heading>\n" (proximity stays at 0).
  */
 static void imu_reader_task(void *pvParam)
 {
@@ -58,9 +62,31 @@ static void imu_reader_task(void *pvParam)
             if (line_pos > 0) {
                 line[line_pos] = '\0';
 
-                /* Parse "H:<heading>" */
+                /* Parse "H:<heading>,P:<proximity>" */
                 if (line[0] == 'H' && line[1] == ':') {
-                    float h = strtof(&line[2], NULL);
+                    /* Extract heading */
+                    char *h_start = &line[2];
+                    char *comma = strchr(h_start, ',');
+
+                    float h;
+                    if (comma) {
+                        /* Temporarily null-terminate at comma to parse heading */
+                        *comma = '\0';
+                        h = strtof(h_start, NULL);
+                        *comma = ',';  /* Restore */
+
+                        /* Parse ",P:<proximity>" */
+                        if (comma[1] == 'P' && comma[2] == ':') {
+                            int p = atoi(&comma[3]);
+                            if (p >= 0 && p <= 255) {
+                                s_proximity = (uint8_t)p;
+                            }
+                        }
+                    } else {
+                        /* Legacy format: "H:<heading>" only */
+                        h = strtof(h_start, NULL);
+                    }
+
                     if (h >= 0.0f && h < 360.0f) {
                         s_heading = h;
                         s_update_count++;
@@ -68,13 +94,15 @@ static void imu_reader_task(void *pvParam)
                             valid_count++;
                             if (valid_count >= 5) {
                                 s_ready = true;
-                                ESP_LOGI(TAG, "IMU ready -- heading: %.1f deg", h);
+                                ESP_LOGI(TAG, "IMU ready -- heading: %.1f deg, proximity: %d",
+                                         h, s_proximity);
                             }
                         }
                         /* Periodic log to confirm UART data flow */
                         if (s_update_count % 100 == 0) {
-                            ESP_LOGI(TAG, "IMU heading: %.1f deg (%lu updates)",
-                                     h, (unsigned long)s_update_count);
+                            ESP_LOGI(TAG, "IMU heading: %.1f deg  prox: %d (%lu updates)",
+                                     h, s_proximity,
+                                     (unsigned long)s_update_count);
                         }
                     }
                 }
@@ -131,6 +159,16 @@ esp_err_t imu_init(void)
 float imu_get_heading(void)
 {
     return s_heading;
+}
+
+uint8_t imu_get_proximity(void)
+{
+    return s_proximity;
+}
+
+bool imu_proximity_blocked(void)
+{
+    return s_proximity > PROX_THRESHOLD;
 }
 
 bool imu_is_ready(void)

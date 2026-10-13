@@ -6,7 +6,7 @@ Takes the merged exploration dataset (from merge_sessions.py) and produces
 a goal-conditioned offline RL dataset by retroactively assigning goals
 from future timesteps in each trajectory segment.
 
-Each training sample:  (obs, goal, action, reward, next_obs, done, obs_sonar, goal_sonar)
+Each training sample:  (obs, goal, action, reward, next_obs, done, obs_proximity, goal_proximity)
 """
 
 import os
@@ -35,15 +35,15 @@ def load_merged_dataset(merged_dir):
     frames = data["frames"]       # (N, 96, 96, 3) uint8
     actions = data["actions"]     # (N,) int32
     headings = data["headings"]   # (N,) float32
-    sonar_cm = data["sonar_cm"]   # (N,) float32
+    proximity = data["proximity"]   # (N,) float32
 
     with open(os.path.join(merged_dir, "segments.json"), "r") as f:
         segments = json.load(f)
 
     print(f"[*] Loaded {len(frames)} frames, {len(segments)} segments")
-    print(f"    sonar: mean={sonar_cm.mean():.1f} cm, "
-          f"blocked={np.mean(sonar_cm < 25.0)*100:.1f}%")
-    return frames, actions, headings, sonar_cm, segments
+    print(f"    proximity: mean={proximity.mean():.1f}, "
+          f"blocked={np.mean(proximity > 200.0)*100:.1f}%")
+    return frames, actions, headings, proximity, segments
 
 
 def relabel_segment(frames, actions, seg_start, seg_end, rng):
@@ -94,7 +94,7 @@ def build_dataset(frames, actions, segments):
 
     Instead of duplicating image data, we store indices into the
     frames array. The actual images are loaded on-the-fly during training.
-    Sonar/heading are looked up by index at save time.
+    Proximity/heading are looked up by index at save time.
     """
     rng = np.random.default_rng(SEED)
     all_transitions = []
@@ -114,14 +114,14 @@ def build_dataset(frames, actions, segments):
     return all_transitions
 
 
-def save_dataset(frames, headings, sonar_cm, transitions, output_dir):
+def save_dataset(frames, headings, proximity, transitions, output_dir):
     """
     Save the offline RL dataset in an efficient format.
 
     We save:
-      - frames.npz: all frames + headings + sonar_cm (shared, referenced by index)
+      - frames.npz: all frames + headings + proximity (shared, referenced by index)
       - transitions.npz: arrays of obs_idx, goal_idx, action, reward, next_obs_idx, done,
-                         obs_sonar, goal_sonar (pre-indexed for convenience)
+                         obs_proximity, goal_proximity (pre-indexed for convenience)
       - dataset_info.json: metadata
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -134,19 +134,19 @@ def save_dataset(frames, headings, sonar_cm, transitions, output_dir):
     reward_arr = np.array([t["reward"] for t in transitions], dtype=np.float32)
     done_arr = np.array([t["done"] for t in transitions], dtype=np.bool_)
 
-    # Pre-index sonar for each transition (avoids lookup at training time)
-    obs_sonar = sonar_cm[obs_idx]       # (n,) float32
-    goal_sonar = sonar_cm[goal_idx]     # (n,) float32
+    # Pre-index proximity for each transition (avoids lookup at training time)
+    obs_proximity = proximity[obs_idx]       # (n,) float32
+    goal_proximity = proximity[goal_idx]     # (n,) float32
 
     # Save frames + sensor data (shared bank, referenced by index)
     np.savez_compressed(
         os.path.join(output_dir, "frames.npz"),
         frames=frames,
         headings=headings,
-        sonar_cm=sonar_cm,
+        proximity=proximity,
     )
 
-    # Save transitions (indices + labels + pre-indexed sonar)
+    # Save transitions (indices + labels + pre-indexed proximity)
     np.savez_compressed(
         os.path.join(output_dir, "transitions.npz"),
         obs_idx=obs_idx,
@@ -155,8 +155,8 @@ def save_dataset(frames, headings, sonar_cm, transitions, output_dir):
         actions=action_arr,
         rewards=reward_arr,
         dones=done_arr,
-        obs_sonar=obs_sonar,
-        goal_sonar=goal_sonar,
+        obs_proximity=obs_proximity,
+        goal_proximity=goal_proximity,
     )
 
     # Compute stats
@@ -174,9 +174,9 @@ def save_dataset(frames, headings, sonar_cm, transitions, output_dir):
         "action_distribution": action_counts,
         "positive_reward_count": int(reward_pos),
         "negative_reward_count": int(reward_neg),
-        "sonar_stats": {
-            "obs_mean_cm": round(float(obs_sonar.mean()), 1),
-            "goal_mean_cm": round(float(goal_sonar.mean()), 1),
+        "proximity_stats": {
+            "obs_mean": round(float(obs_proximity.mean()), 1),
+            "goal_mean": round(float(goal_proximity.mean()), 1),
         },
         "seed": SEED,
     }
@@ -195,7 +195,7 @@ def main():
     t_start = time.time()
 
     print(f"\n[*] Loading merged dataset from: {MERGED_DIR}")
-    frames, actions, headings, sonar_cm, segments = load_merged_dataset(MERGED_DIR)
+    frames, actions, headings, proximity, segments = load_merged_dataset(MERGED_DIR)
 
     print(f"\n[*] Relabeling with {NUM_RELABELS} goals/step, "
           f"horizon={MAX_HORIZON}, terminal≤{TERMINAL_THRESHOLD} steps")
@@ -203,7 +203,7 @@ def main():
 
     print(f"\n[*] Total transitions: {len(transitions)}")
     print(f"[*] Saving to: {OUTPUT_DIR}")
-    info = save_dataset(frames, headings, sonar_cm, transitions, OUTPUT_DIR)
+    info = save_dataset(frames, headings, proximity, transitions, OUTPUT_DIR)
 
     elapsed = time.time() - t_start
     print(f"\n{'='*50}")

@@ -4,9 +4,9 @@
  *
  * In navigation mode:
  *   1. Captures camera frame → downsample to 96×96
- *   2. Reads sonar distance for obstacle awareness
- *   3. Runs student model: image + sonar → action logits
- *   4. Applies sonar safety override if needed
+ *   2. Reads proximity from Arduino APDS9960
+ *   3. Runs student model: image + proximity → action logits
+ *   4. Applies proximity safety override if needed
  *   5. Executes motor action
  */
 #ifndef NAVIGATOR_H

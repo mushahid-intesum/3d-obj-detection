@@ -115,7 +115,7 @@ class IQLTrainer:
         actions = batch["action"].to(DEVICE)
         rewards = batch["reward"].to(DEVICE)
         dones = batch["done"].to(DEVICE)
-        obs_sonar = batch["obs_sonar"].to(DEVICE)     # (B,) normalized [0,1]
+        obs_proximity = batch["obs_proximity"].to(DEVICE)     # (B,) normalized [0,1]
 
         # ── Compute correlation cues ──
         cue = self.compute_cue(obs, goal)
@@ -124,22 +124,22 @@ class IQLTrainer:
 
         # ── Q targets (from target networks) ──
         with torch.no_grad():
-            q1_target = self.q1_target(cue, obs_sonar, actions)
-            q2_target = self.q2_target(cue, obs_sonar, actions)
+            q1_target = self.q1_target(cue, obs_proximity, actions)
+            q2_target = self.q2_target(cue, obs_proximity, actions)
             q_target = torch.min(q1_target, q2_target)
 
         # ── V loss: expectile regression ──
-        v_pred = self.model.v(cue, obs_sonar)
+        v_pred = self.model.v(cue, obs_proximity)
         v_diff = q_target - v_pred
         loss_v = expectile_loss(v_diff, IQL_TAU)
 
         # ── Q losses: Bellman TD error ──
         with torch.no_grad():
-            v_next = self.model.v(cue_next, obs_sonar)
+            v_next = self.model.v(cue_next, obs_proximity)
             td_target = rewards + DISCOUNT * (1.0 - dones) * v_next
 
-        q1_pred = self.model.q1(cue, obs_sonar, actions)
-        q2_pred = self.model.q2(cue, obs_sonar, actions)
+        q1_pred = self.model.q1(cue, obs_proximity, actions)
+        q2_pred = self.model.q2(cue, obs_proximity, actions)
         loss_q1 = F.mse_loss(q1_pred, td_target)
         loss_q2 = F.mse_loss(q2_pred, td_target)
 
@@ -149,7 +149,7 @@ class IQLTrainer:
             # Clamp for numerical stability
             weights = torch.exp(IQL_BETA * advantage).clamp(max=100.0)
 
-        log_probs = F.log_softmax(self.model.policy(cue, obs_sonar), dim=-1)
+        log_probs = F.log_softmax(self.model.policy(cue, obs_proximity), dim=-1)
         log_prob_actions = log_probs.gather(1, actions.unsqueeze(1)).squeeze(1)
         loss_pi = -(weights * log_prob_actions).mean()
 
@@ -192,9 +192,9 @@ class IQLTrainer:
             obs = batch["obs"].to(DEVICE)
             goal = batch["goal"].to(DEVICE)
             actions = batch["action"].to(DEVICE)
-            obs_sonar = batch["obs_sonar"].to(DEVICE)
+            obs_proximity = batch["obs_proximity"].to(DEVICE)
 
-            logits = self.model(obs, goal, obs_sonar)
+            logits = self.model(obs, goal, obs_proximity)
             preds = logits.argmax(dim=-1)
             correct += (preds == actions).sum().item()
             total += len(actions)

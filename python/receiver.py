@@ -5,8 +5,8 @@ receiver.py — TCP client for free exploration data collection (IMG5 protocol).
 Connects to ESP32-S3 single board, receives IMG5 packets containing:
   - JPEG frame (captured by OV3660 camera)
   - action_taken (from pink noise explorer / policy)
-  - sonar_blocked (from HC-SR04 ultrasonic sensor)
-  - sonar_cm (raw distance in cm)
+  - prox_blocked (from APDS9960 proximity sensor on Arduino)
+  - proximity (raw APDS9960 value, 0–255)
   - heading_deg (from IMU via Arduino UART)
   - timestep (session-local index)
 
@@ -102,7 +102,7 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
         # ── Receive IMG5 header (26 bytes) ──
         header = recv_exact(sock, HEADER_SIZE)
         (magic, frame_id, timestep, action_taken,
-         sonar_blocked, sonar_cm, heading_deg, jpeg_len) = \
+         prox_blocked, proximity, heading_deg, jpeg_len) = \
             struct.unpack("<IIIBBffI", header)
 
         if magic != MAGIC:
@@ -127,15 +127,15 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
             "frame": filename,
             "action": int(action_taken),
             "heading": round(float(heading_deg), 2),
-            "sonar_cm": round(float(sonar_cm), 1),
-            "blocked": bool(sonar_blocked),
+            "proximity": round(float(proximity), 1),
+            "blocked": bool(prox_blocked),
             "ts": round(time.time(), 3),
         }
         traj_file.write(json.dumps(entry) + "\n")
         traj_file.flush()
 
         # Track overrides
-        if sonar_blocked:
+        if prox_blocked:
             override_count += 1
 
         frame_count += 1
@@ -146,8 +146,8 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
             print(f"  [{frame_count:>6}] "
                   f"act={action_str:<5} "
                   f"hdg={heading_deg:6.1f}° "
-                  f"sonar={sonar_cm:5.1f}cm "
-                  f"blk={sonar_blocked} "
+                  f"prox={proximity:5.0f} "
+                  f"blk={prox_blocked} "
                   f"({override_count} overrides)")
 
         # ── Live preview ──
@@ -159,12 +159,12 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
 
             action_str = ACTION_NAMES[action_taken] if action_taken < 4 else "?"
             label = (f"Step:{frame_count} Act:{action_str} "
-                     f"Hdg:{heading_deg:.0f} Sonar:{sonar_cm:.0f}cm")
-            color = (0, 0, 255) if sonar_blocked else (0, 255, 0)
+                     f"Hdg:{heading_deg:.0f} Prox:{proximity:.0f}")
+            color = (0, 0, 255) if prox_blocked else (0, 255, 0)
             cv2.putText(display, label, (8, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-            if sonar_blocked:
-                cv2.putText(display, f"BLOCKED ({sonar_cm:.0f}cm)", (8, 370),
+            if prox_blocked:
+                cv2.putText(display, f"BLOCKED (prox={proximity:.0f})", (8, 370),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             cv2.imshow("Exploration", display)
             if cv2.waitKey(1) & 0xFF == ord("q"):

@@ -2,7 +2,7 @@
  * @file config.h
  * @brief Hardware configuration — single ESP32-S3 board.
  *
- * All-in-one: OV3660 camera, DRV8833 motors, HC-SR04 sonar,
+ * All-in-one: OV3660 camera, DRV8833 motors, APDS9960 proximity,
  * Arduino IMU UART, WiFi streaming.
  */
 #ifndef CONFIG_H
@@ -62,7 +62,7 @@
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Arduino IMU (UART1)
  *
- *  Arduino Nano 33 BLE Rev2 sends "H:<heading>\n" at 50Hz.
+ *  Arduino Nano BLE Sense Rev2 sends "H:<heading>,P:<proximity>\n" at 50Hz.
  *  Wiring: Arduino TX (D0) → ESP32 GPIO, GND → GND.
  *
  *  WARNING: IMU_UART_RX_PIN must NOT conflict with camera pins.
@@ -73,22 +73,15 @@
 #define IMU_UART_TX_PIN   21
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  HC-SR04 Ultrasonic Sonar
+ *  APDS9960 Proximity (via Arduino UART)
  *
- *  TRIG: 10µs HIGH pulse triggers measurement.
- *  ECHO: pulse width = round-trip time → distance_cm = us / 58.
+ *  The Arduino Nano BLE Sense Rev2 reads its onboard APDS9960 and sends
+ *  the proximity value [0–255] alongside the heading over UART.
+ *  No extra GPIO pins needed — piggybacks on IMU UART.
  *
- *  NOTE: HC-SR04 runs at 5V. ECHO output is 5V — use a voltage divider
- *  (e.g. 1kΩ + 2kΩ) to drop to ~3.3V for ESP32 GPIO input.
- *  TRIG accepts 3.3V (triggers on ≥2.5V).
- *
- *  TODO: Set actual pin numbers before flashing.
+ *  Proximity: 0 = far, 255 = close (higher = nearer obstacle).
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define SONAR_TRIG_PIN       0    /* TODO: assign actual GPIO */
-#define SONAR_ECHO_PIN       0    /* TODO: assign actual GPIO */
-#define SONAR_THRESHOLD_CM   25.0f  /* obstacle if distance < this */
-#define SONAR_MAX_RANGE_CM   200.0f
-#define SONAR_TIMEOUT_US     30000  /* 30ms ≈ ~5m max range */
+#define PROX_THRESHOLD       200    /* obstacle if proximity > this (0–255) */
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Exploration Parameters

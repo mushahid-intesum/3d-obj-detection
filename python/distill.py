@@ -6,7 +6,7 @@ Dual-level distillation:
   2. Correlation feature matching (MSE between projected cues)
   3. Hard label loss (cross-entropy with teacher's argmax)
 
-Both teacher and student receive sonar input for their policy heads.
+Both teacher and student receive proximity input for their policy heads.
 """
 
 import os
@@ -95,18 +95,18 @@ class DistillationTrainer:
         """One distillation gradient step."""
         obs = batch["obs"].to(DEVICE)
         goal = batch["goal"].to(DEVICE)
-        obs_sonar = batch["obs_sonar"].to(DEVICE)   # (B,) normalized [0,1]
+        obs_proximity = batch["obs_proximity"].to(DEVICE)   # (B,) normalized [0,1]
 
         # ── Teacher forward (no grad) ──
         with torch.no_grad():
             teacher_cue = self.teacher.encode_and_correlate(obs, goal)
-            teacher_logits = self.teacher.policy(teacher_cue, obs_sonar)
+            teacher_logits = self.teacher.policy(teacher_cue, obs_proximity)
             teacher_actions = teacher_logits.argmax(dim=-1)
 
         # ── Student forward ──
         student_corr_cue = self.student.get_cue(obs, goal)        # (B, 258)
         student_logits = self.student.forward_with_cue(
-            student_corr_cue, obs_sonar
+            student_corr_cue, obs_proximity
         )                                                          # (B, 4)
 
         # ── Loss 1: Action distribution matching (KL divergence) ──
@@ -118,7 +118,7 @@ class DistillationTrainer:
         ) * (TEMPERATURE ** 2)
 
         # ── Loss 2: Correlation feature matching (MSE) ──
-        # Match raw correlation cue (no sonar) to teacher cue
+        # Match raw correlation cue (no proximity) to teacher cue
         student_cue_proj = self.student.project_cue(student_corr_cue)
         loss_corr = F.mse_loss(student_cue_proj, teacher_cue)
 
@@ -162,10 +162,10 @@ class DistillationTrainer:
                 break
             obs = batch["obs"].to(DEVICE)
             goal = batch["goal"].to(DEVICE)
-            obs_sonar = batch["obs_sonar"].to(DEVICE)
+            obs_proximity = batch["obs_proximity"].to(DEVICE)
 
-            teacher_logits = self.teacher(obs, goal, obs_sonar)
-            student_logits = self.student(obs, goal, obs_sonar)
+            teacher_logits = self.teacher(obs, goal, obs_proximity)
+            student_logits = self.student(obs, goal, obs_proximity)
 
             t_actions = teacher_logits.argmax(dim=-1)
             s_actions = student_logits.argmax(dim=-1)

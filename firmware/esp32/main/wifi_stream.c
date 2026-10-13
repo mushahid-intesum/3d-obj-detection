@@ -208,8 +208,8 @@ static esp_err_t send_all(const void *buf, size_t len)
 }
 
 esp_err_t stream_send_frame(uint32_t frame_id, uint32_t timestep,
-                            uint8_t action_taken, uint8_t sonar_blocked,
-                            float sonar_cm, float heading_deg,
+                            uint8_t action_taken, uint8_t prox_blocked,
+                            float proximity, float heading_deg,
                             const uint8_t *jpeg_buf, uint32_t jpeg_len)
 {
     if (s_client_sock < 0) return ESP_FAIL;
@@ -220,8 +220,8 @@ esp_err_t stream_send_frame(uint32_t frame_id, uint32_t timestep,
      *   [4..7]   frame_id       uint32 LE
      *   [8..11]  timestep       uint32 LE
      *   [12]     action_taken   uint8
-     *   [13]     sonar_blocked  uint8
-     *   [14..17] sonar_cm       float32 LE
+     *   [13]     prox_blocked   uint8
+     *   [14..17] proximity      float32 LE
      *   [18..21] heading_deg    float32 LE
      *   [22..25] jpeg_len       uint32 LE
      *   [26..N]  jpeg_data
@@ -232,8 +232,8 @@ esp_err_t stream_send_frame(uint32_t frame_id, uint32_t timestep,
     memcpy(&header[4],  &frame_id, 4);
     memcpy(&header[8],  &timestep, 4);
     header[12] = action_taken;
-    header[13] = sonar_blocked;
-    memcpy(&header[14], &sonar_cm, 4);
+    header[13] = prox_blocked;
+    memcpy(&header[14], &proximity, 4);
     memcpy(&header[18], &heading_deg, 4);
     memcpy(&header[22], &jpeg_len, 4);
 

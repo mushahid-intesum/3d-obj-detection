@@ -6,9 +6,9 @@
  *   1. Cache goal features (from first frame or NVS)
  *   2. Per step:
  *      a. Capture camera frame → downsample to 96×96
- *      b. Read sonar distance
- *      c. Run student model: image + sonar → action logits
- *      d. Safety override if sonar blocked
+ *      b. Read proximity from Arduino
+ *      c. Run student model: image + proximity → action logits
+ *      d. Safety override if proximity blocked
  *      e. Execute motor action
  *      f. Stream frame to laptop (optional monitoring)
  */
@@ -21,7 +21,7 @@
 #include "camera.h"
 #include "image_proc.h"
 #include "wifi_stream.h"
-#include "sonar.h"
+
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -121,9 +121,9 @@ static void navigation_task(void *pvParam)
          */
         image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
 
-        /* 3. Read sonar + IMU */
-        float sonar_cm = sonar_get_distance_cm();
-        bool sonar_blocked = (sonar_cm < SONAR_THRESHOLD_CM);
+        /* 3. Read proximity + IMU */
+        uint8_t proximity = imu_get_proximity();
+        bool prox_blocked = imu_proximity_blocked();
         float heading = imu_get_heading();
         if (heading < 0.0f) heading = 0.0f;
 
@@ -143,8 +143,8 @@ static void navigation_task(void *pvParam)
             continue;
         }
 
-        /* 5. Run policy inference: image + sonar → action logits */
-        err = inference_run_policy(s_img_buf, sonar_cm, action_logits);
+        /* 5. Run policy inference: image + proximity → action logits */
+        err = inference_run_policy(s_img_buf, (float)proximity, action_logits);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Policy inference failed");
             camera_release_frame(fb);
@@ -155,8 +155,8 @@ static void navigation_task(void *pvParam)
         uint8_t action = (uint8_t)policy_idx;
 
         /* 6. Safety override (always active) */
-        if (sonar_blocked && action == ACTION_FORWARD) {
-            ESP_LOGW(TAG, "Sonar override! dist=%.1f cm, FWD → turn", sonar_cm);
+        if (prox_blocked && action == ACTION_FORWARD) {
+            ESP_LOGW(TAG, "Proximity override! prox=%d, FWD → turn", proximity);
             action = random_turn();
         }
 
@@ -164,8 +164,8 @@ static void navigation_task(void *pvParam)
         if (stream_is_connected()) {
             stream_send_frame(
                 frame_id, (uint32_t)step, action,
-                sonar_blocked ? 1 : 0,
-                sonar_cm, heading, fb->buf, fb->len
+                prox_blocked ? 1 : 0,
+                (float)proximity, heading, fb->buf, fb->len
             );
         }
         camera_release_frame(fb);
@@ -185,10 +185,10 @@ static void navigation_task(void *pvParam)
         int64_t t_elapsed_us = esp_timer_get_time() - t_start;
         if (step % 5 == 0) {
             const char *aname = (action < 4) ? ACTION_NAMES[action] : "?";
-            ESP_LOGI(TAG, "Step %3d: action=%s hdg=%.1f sonar=%.1f%s "
+            ESP_LOGI(TAG, "Step %3d: action=%s hdg=%.1f prox=%d%s "
                      "logits=[%d,%d,%d,%d] %lldms",
-                     step, aname, heading, sonar_cm,
-                     sonar_blocked ? " BLOCKED" : "",
+                     step, aname, heading, proximity,
+                     prox_blocked ? " BLOCKED" : "",
                      action_logits[0], action_logits[1],
                      action_logits[2], action_logits[3],
                      t_elapsed_us / 1000);
