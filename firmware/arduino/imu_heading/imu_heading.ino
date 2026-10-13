@@ -1,25 +1,30 @@
 /**
- * Arduino Nano 33 BLE Rev2 — IMU Heading Provider
+ * Arduino Nano 33 BLE Sense Rev2 — IMU Heading + Proximity Provider
  *
- * Reads BMI270 gyroscope + BMM150 magnetometer, computes heading
- * using a complementary filter, and sends it over Serial1 (UART)
+ * Reads BMI270 gyroscope + BMM150 magnetometer for heading, and
+ * APDS9960 for proximity detection. Sends both over Serial1 (UART)
  * to the ESP32-S3 at 50 Hz.
  *
- * IMPORTANT: On Nano 33 BLE Rev2:
+ * IMPORTANT: On Nano 33 BLE Sense Rev2:
  *   Serial  = USB (Serial Monitor) — for debug only
  *   Serial1 = Hardware UART on pins D0(RX)/D1(TX) — connects to ESP32
  *
- * Protocol: "H:<heading>\n"  where heading is 0.00–359.99 degrees
+ * Protocol: "H:<heading>,P:<proximity>\n"
+ *   heading   = 0.00–359.99 degrees (float)
+ *   proximity = 0–255 (uint8, 0=far, 255=close)
  *
  * Wiring:
  *   Arduino D1 (TX) → ESP32 GPIO 3  (UART1 RX)
  *   Arduino GND      → ESP32 GND
  *   Both boards are 3.3V — no level shifting needed.
  *
- * Library: Arduino_BMI270_BMM150 (install via Arduino Library Manager)
+ * Libraries (install via Arduino Library Manager):
+ *   - Arduino_BMI270_BMM150
+ *   - Arduino_APDS9960
  */
 
 #include <Arduino_BMI270_BMM150.h>
+#include <Arduino_APDS9960.h>
 #include <math.h>
 
 /* ── Configuration ── */
@@ -32,6 +37,8 @@
 static float heading = 0.0f;
 static unsigned long last_micros = 0;
 static bool mag_available = false;
+static bool prox_available = false;
+static int  proximity = 0;        /* 0=far, 255=close */
 
 /**
  * @brief Compute magnetometer heading from raw readings.
@@ -78,16 +85,26 @@ void setup() {
         heading = mag_heading(mx, my);
     }
 
+    /* Initialize APDS9960 proximity sensor */
+    if (APDS.begin()) {
+        prox_available = true;
+    } else {
+        Serial.println("WARNING: APDS9960 init failed — proximity disabled");
+        Serial1.println("E:APDS9960_INIT_FAIL");
+    }
+
     last_micros = micros();
 
     /* Print to both USB (debug) and UART (ESP32) */
-    Serial.println("IMU ready");
+    Serial.println("IMU + Proximity ready");
     Serial.print("Gyro sample rate: "); Serial.println(IMU.gyroscopeSampleRate());
     Serial.print("Magnetometer: ");     Serial.println(mag_available ? "YES" : "NO");
+    Serial.print("APDS9960: ");         Serial.println(prox_available ? "YES" : "NO");
 
-    Serial1.println("I:IMU_READY");
+    Serial1.println("I:IMU_PROX_READY");
     Serial1.print("I:GYRO_SR="); Serial1.println(IMU.gyroscopeSampleRate());
     Serial1.print("I:MAG=");     Serial1.println(mag_available ? "YES" : "NO");
+    Serial1.print("I:PROX=");    Serial1.println(prox_available ? "YES" : "NO");
 }
 
 void loop() {
@@ -126,15 +143,32 @@ void loop() {
         }
     }
 
-    /* Send heading to ESP32 via Serial1 (UART pins D0/D1) */
+    /* Read APDS9960 proximity (non-blocking) */
+    if (prox_available && APDS.proximityAvailable()) {
+        proximity = APDS.readProximity();
+        /* APDS9960 library returns 0=close, 255=far on some versions.
+         * The Arduino_APDS9960 library for Rev2 returns 0=far, 255=close.
+         * Verify with Serial Monitor and invert if needed:
+         *   proximity = 255 - APDS.readProximity();  // uncomment if inverted
+         */
+    }
+
+    /* Send heading + proximity to ESP32 via Serial1 (UART pins D0/D1)
+     * Format: "H:<heading>,P:<proximity>\n"  */
     Serial1.print("H:");
-    Serial1.println(heading, 2);
+    Serial1.print(heading, 2);
+    Serial1.print(",P:");
+    Serial1.println(proximity);
 
     /* Also print to USB Serial Monitor for debug */
     static int dbg_counter = 0;
     if (++dbg_counter >= 10) {  /* Print every 10th reading to avoid flooding */
         Serial.print("Heading: ");
-        Serial.println(heading, 2);
+        Serial.print(heading, 2);
+        Serial.print("  Proximity: ");
+        Serial.print(proximity);
+        if (proximity > 200) Serial.print(" [CLOSE!]");
+        Serial.println();
         dbg_counter = 0;
     }
 
