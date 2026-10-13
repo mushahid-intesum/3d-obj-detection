@@ -48,8 +48,8 @@
 /* PWM config */
 #define MOTOR_PWM_FREQ_HZ  1000
 #define MOTOR_PWM_BITS     8
-#define LEFT_MOTOR_SPEED       120
-#define RIGHT_MOTOR_SPEED        70
+#define LEFT_MOTOR_SPEED       100
+#define RIGHT_MOTOR_SPEED      100
 
 /* Movement timing — step-and-stop bursts */
 #define STEP_BURST_MS   500       /* forward burst duration */
@@ -69,7 +69,7 @@
  *  GPIO 13 is currently used by CAM_PIN_PCLK above — reassign one
  *  of them before flashing!
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define IMU_UART_RX_PIN   13    /* FIXME: conflicts with CAM_PIN_PCLK! */
+#define IMU_UART_RX_PIN   44    /* FIXME: conflicts with CAM_PIN_PCLK! */
 #define IMU_UART_TX_PIN   21
 
 /* ═══════════════════════════════════════════════════════════════════════════
