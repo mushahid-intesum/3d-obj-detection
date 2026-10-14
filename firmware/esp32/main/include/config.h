@@ -11,8 +11,8 @@
 /* ═══════════════════════════════════════════════════════════════════════════
  *  DRV8833 Motor Driver
  *
- *  Motor A (left):  IN1/IN2 direction, ENA speed (PWM)
- *  Motor B (right): IN3/IN4 direction, ENB speed (PWM)
+ *  Motor A (right):  IN1/IN2 direction, ENA speed (PWM)
+ *  Motor B (left): IN3/IN4 direction, ENB speed (PWM)
  * ═══════════════════════════════════════════════════════════════════════════ */
 #define MOTOR_IN1       38
 #define MOTOR_IN2       39
@@ -49,7 +49,7 @@
 #define MOTOR_PWM_FREQ_HZ  1000
 #define MOTOR_PWM_BITS     8
 #define LEFT_MOTOR_SPEED       100
-#define RIGHT_MOTOR_SPEED      100
+#define RIGHT_MOTOR_SPEED      90
 
 /* Movement timing — step-and-stop bursts */
 #define STEP_BURST_MS   500       /* forward burst duration */
@@ -69,7 +69,7 @@
  *  GPIO 13 is currently used by CAM_PIN_PCLK above — reassign one
  *  of them before flashing!
  * ═══════════════════════════════════════════════════════════════════════════ */
-#define IMU_UART_RX_PIN   44    /* FIXME: conflicts with CAM_PIN_PCLK! */
+#define IMU_UART_RX_PIN   19    /* FIXME: conflicts with CAM_PIN_PCLK! */
 #define IMU_UART_TX_PIN   21
 
 /* ═══════════════════════════════════════════════════════════════════════════
