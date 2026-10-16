@@ -26,7 +26,7 @@ graph TD
 | **Export** | The quantized student is split into encoder and policy TFLite models and converted to C header arrays. |
 | **Deployment** | Models are flashed to ESP32-S3. Inference runs at 5 Hz entirely on-device with no cloud connectivity. |
 
-For full architectural details, loss formulations, and compression analysis, see the [technical report](TODO_LINK_TO_PDF).
+For full architectural details, loss formulations, and compression analysis, see the [technical report](./technical_report.pdf).
 
 ---
 
