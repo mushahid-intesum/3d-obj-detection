@@ -1,14 +1,3 @@
-"""
-quantize_export.py — Phase 6: Quantize student model and export for ESP32-S3.
-
-Pipeline:
-  1. Load distilled student checkpoint
-  2. Quantization-aware training (QAT) fine-tuning
-  3. Export encoder and policy as separate ONNX models
-  4. Convert ONNX → TFLite INT8
-  5. Generate C header files for embedding in ESP32 firmware
-  6. Validate INT8 accuracy vs FP32
-"""
 
 import os
 import struct
@@ -24,31 +13,24 @@ from student_model import StudentModel, TinyEncoder, TinyPolicy
 from models import TeacherModel
 from dataset import get_dataloader
 
-# ═══════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════
 DATASET_DIR         = "./data/offline_dataset"
 STUDENT_CKPT        = "./checkpoints/student/best.pt"
 TEACHER_CKPT        = "./checkpoints/teacher/best.pt"
 OUTPUT_DIR          = "./export"
 DEVICE              = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Teacher config (must match)
 TEACHER_FEAT_DIM    = 512
 TEACHER_CUE_DIM     = 512
 NUM_ACTIONS         = 4
 
-# QAT config
 QAT_STEPS           = 10_000
 QAT_LR              = 1e-4
 QAT_BATCH_SIZE      = 256
 QAT_TEMPERATURE     = 4.0
 NUM_WORKERS         = 4
 
-# TFLite calibration
 CALIBRATION_SAMPLES = 200
 SEED                = 42
-# ═══════════════════════════════════════════
 
 
 def set_seed(seed):
@@ -57,7 +39,6 @@ def set_seed(seed):
 
 
 def load_student(ckpt_path):
-    """Load the distilled student model."""
     student = StudentModel(num_actions=NUM_ACTIONS)
     ckpt = torch.load(ckpt_path, map_location="cpu")
     student.load_state_dict(ckpt["model_state"])
@@ -66,7 +47,6 @@ def load_student(ckpt_path):
 
 
 def load_teacher(ckpt_path):
-    """Load frozen teacher for QAT."""
     teacher = TeacherModel(
         feat_dim=TEACHER_FEAT_DIM, cue_dim=TEACHER_CUE_DIM,
         num_actions=NUM_ACTIONS
@@ -79,20 +59,13 @@ def load_teacher(ckpt_path):
     return teacher
 
 
-# ────────────────────────────────────────────
-#  Step 1: Quantization-Aware Training
-# ────────────────────────────────────────────
-
 def run_qat(student, teacher, loader):
-    """Fine-tune student with fake quantization nodes inserted."""
     print("\n[*] Running Quantization-Aware Training...")
 
     student = student.to(DEVICE)
     student.train()
 
-    # Insert QAT observers
     student.qconfig = torch.ao.quantization.get_default_qat_qconfig("x86")
-    # Only quantize encoder and policy (not correlation — it's plain math)
     modules_to_quantize = [student.encoder, student.policy]
     for m in modules_to_quantize:
         m.qconfig = torch.ao.quantization.get_default_qat_qconfig("x86")
@@ -119,7 +92,6 @@ def run_qat(student, teacher, loader):
 
         student_logits = student(obs, goal, obs_proximity)
 
-        # Distillation loss during QAT
         t_soft = F.log_softmax(teacher_logits / QAT_TEMPERATURE, dim=-1)
         s_soft = F.log_softmax(student_logits / QAT_TEMPERATURE, dim=-1)
         loss_kl = F.kl_div(s_soft, t_soft.exp(), reduction='batchmean') * (QAT_TEMPERATURE ** 2)
@@ -136,19 +108,13 @@ def run_qat(student, teacher, loader):
             print(f"  QAT step {step}/{QAT_STEPS}: "
                   f"loss={loss.item():.4f} agreement={agreement.item():.3f}")
 
-    # Convert to actual quantized model
     student.eval()
     student_quantized = torch.ao.quantization.convert(student, inplace=False)
     print("[OK] QAT complete")
     return student, student_quantized
 
 
-# ────────────────────────────────────────────
-#  Step 2: Export to ONNX
-# ────────────────────────────────────────────
-
 class EncoderWrapper(nn.Module):
-    """Wrapper to export just the encoder."""
     def __init__(self, encoder):
         super().__init__()
         self.encoder = encoder
@@ -158,10 +124,6 @@ class EncoderWrapper(nn.Module):
 
 
 class PolicyWrapper(nn.Module):
-    """Wrapper to export the policy MLP.
-
-    Takes the full cue (correlation + proximity concatenated) as a single input.
-    """
     def __init__(self, policy):
         super().__init__()
         self.policy = policy
@@ -171,13 +133,11 @@ class PolicyWrapper(nn.Module):
 
 
 def export_onnx(student_fp32, output_dir):
-    """Export encoder and policy as separate ONNX models."""
     os.makedirs(output_dir, exist_ok=True)
     student_fp32.eval().cpu()
 
     from student_model import CUE_DIM
 
-    # Export encoder
     encoder_wrapper = EncoderWrapper(student_fp32.encoder)
     dummy_img = torch.randn(1, 3, 96, 96)
     encoder_path = os.path.join(output_dir, "encoder.onnx")
@@ -189,7 +149,6 @@ def export_onnx(student_fp32, output_dir):
     )
     print(f"[OK] Encoder ONNX: {encoder_path}")
 
-    # Export policy (input = correlation cue + proximity = CUE_DIM)
     policy_wrapper = PolicyWrapper(student_fp32.policy)
     dummy_cue = torch.randn(1, CUE_DIM)
     policy_path = os.path.join(output_dir, "policy.onnx")
@@ -204,12 +163,7 @@ def export_onnx(student_fp32, output_dir):
     return encoder_path, policy_path
 
 
-# ────────────────────────────────────────────
-#  Step 3: Convert ONNX → TFLite INT8
-# ────────────────────────────────────────────
-
 def generate_calibration_data(loader, n_samples):
-    """Generate calibration images for TFLite INT8 quantization."""
     images = []
     for batch in loader:
         obs = batch["obs"].numpy()
@@ -227,24 +181,16 @@ def generate_calibration_data(loader, n_samples):
 
 def convert_to_tflite(onnx_path, output_path, calibration_data=None,
                       input_shape=None):
-    """
-    Convert ONNX → TFLite with INT8 quantization.
-
-    Uses onnx2tf or manual TFLite conversion.
-    Falls back to creating a representative dataset for full integer quant.
-    """
     try:
         import onnx
         from onnx_tf.backend import prepare
         import tensorflow as tf
 
-        # ONNX → TF SavedModel
         onnx_model = onnx.load(onnx_path)
         tf_rep = prepare(onnx_model)
         saved_model_dir = onnx_path.replace(".onnx", "_saved_model")
         tf_rep.export_graph(saved_model_dir)
 
-        # TF SavedModel → TFLite INT8
         converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
         converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
@@ -273,17 +219,7 @@ def convert_to_tflite(onnx_path, output_path, calibration_data=None,
         return False
 
 
-# ────────────────────────────────────────────
-#  Step 4: Generate C header for ESP32
-# ────────────────────────────────────────────
-
 def tflite_to_c_header(tflite_path, header_path, array_name):
-    """Convert .tflite file to a C header for ESP32-S3 embedding.
-
-    Generates a header with:
-      - 16-byte aligned array (optimal for ESP32 DMA/flash)
-      - INFERENCE_HAS_MODEL flag so inference.cpp auto-detects the model
-    """
     with open(tflite_path, "rb") as f:
         data = f.read()
 
@@ -301,7 +237,6 @@ def tflite_to_c_header(tflite_path, header_path, array_name):
         f.write(f"const unsigned int {array_name}_len = {len(data)};\n")
         f.write(f"alignas(16) const uint8_t {array_name}[] = {{\n")
 
-        # Write 16 bytes per line
         for i in range(0, len(data), 16):
             chunk = data[i:i+16]
             hex_vals = ", ".join(f"0x{b:02x}" for b in chunk)
@@ -313,13 +248,8 @@ def tflite_to_c_header(tflite_path, header_path, array_name):
     print(f"[OK] C header: {header_path} ({len(data)} bytes, {len(data)/1024:.1f} KB)")
 
 
-# ────────────────────────────────────────────
-#  Step 5: Validate INT8 accuracy
-# ────────────────────────────────────────────
-
 @torch.no_grad()
 def validate_fp32_vs_int8(student_fp32, loader, max_batches=50):
-    """Compare FP32 student accuracy (as baseline for INT8 comparison)."""
     student_fp32.eval().cpu()
     correct = 0
     total = 0
@@ -342,10 +272,6 @@ def validate_fp32_vs_int8(student_fp32, loader, max_batches=50):
     return acc
 
 
-# ────────────────────────────────────────────
-#  Main pipeline
-# ────────────────────────────────────────────
-
 def main():
     print("=" * 55)
     print("  Phase 6: Quantization & Export")
@@ -354,11 +280,9 @@ def main():
     set_seed(SEED)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Load models
     student = load_student(STUDENT_CKPT)
     teacher = load_teacher(TEACHER_CKPT)
 
-    # Data
     train_loader = get_dataloader(
         DATASET_DIR, batch_size=QAT_BATCH_SIZE,
         augment=True, num_workers=NUM_WORKERS
@@ -368,23 +292,17 @@ def main():
         augment=False, num_workers=NUM_WORKERS
     )
 
-    # Step 0: FP32 baseline
     print("\n── Step 0: FP32 Baseline ──")
     fp32_acc = validate_fp32_vs_int8(student, eval_loader)
 
-    # Step 1: QAT
     print("\n── Step 1: Quantization-Aware Training ──")
     student_qat, student_quantized = run_qat(student, teacher, train_loader)
 
-    # Step 2: Export ONNX (from QAT FP32 model, not quantized)
     print("\n── Step 2: Export ONNX ──")
     student_qat.eval().cpu()
-    # Remove QAT observers for clean export
     student_export = StudentModel(num_actions=NUM_ACTIONS)
-    # Copy weights (skip observer keys)
     clean_state = {}
     for k, v in student_qat.state_dict().items():
-        # Skip quantization observer keys
         if any(x in k for x in ["weight_fake_quant", "activation_post_process",
                                   "observer", "scale", "zero_point", "min_val",
                                   "max_val", "eps"]):
@@ -394,7 +312,6 @@ def main():
     student_export.load_state_dict(clean_state, strict=False)
     encoder_onnx, policy_onnx = export_onnx(student_export, OUTPUT_DIR)
 
-    # Step 3: Convert to TFLite INT8
     print("\n── Step 3: Convert to TFLite INT8 ──")
     calib_data = generate_calibration_data(eval_loader, CALIBRATION_SAMPLES)
     print(f"[*] Calibration data: {calib_data.shape}")
@@ -405,14 +322,12 @@ def main():
     enc_ok = convert_to_tflite(encoder_onnx, encoder_tflite,
                                 calibration_data=calib_data,
                                 input_shape=(1, 3, 96, 96))
-    # Policy calibration: random cues (CUE_DIM = 259 = 258 corr + 1 proximity)
     from student_model import CUE_DIM, CORR_FLAT_DIM
     pol_calib = np.random.randn(CALIBRATION_SAMPLES, CUE_DIM).astype(np.float32)
     pol_ok = convert_to_tflite(policy_onnx, policy_tflite,
                                 calibration_data=pol_calib,
                                 input_shape=(1, CUE_DIM))
 
-    # Step 4: Generate C headers
     print("\n── Step 4: Generate C Headers ──")
     esp32_model_dir = os.path.join(OUTPUT_DIR, "esp32_headers")
     os.makedirs(esp32_model_dir, exist_ok=True)
@@ -430,11 +345,9 @@ def main():
             "policy_model"
         )
 
-    # Also save the FP32 ONNX models for reference
     torch.save(student_export.state_dict(),
                os.path.join(OUTPUT_DIR, "student_fp32.pt"))
 
-    # Summary
     print(f"\n{'='*55}")
     print(f"  Export complete!")
     print(f"  FP32 accuracy: {fp32_acc:.3f}")

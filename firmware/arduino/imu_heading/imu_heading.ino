@@ -4,14 +4,14 @@
 
 #define SERIAL_BAUD     115200
 #define OUTPUT_HZ       50
-#define ALPHA           0.98f   
-#define MAG_DECLINATION 0.0f   
+#define ALPHA           0.98f
+#define MAG_DECLINATION 0.0f
 
 static float heading = 0.0f;
 static unsigned long last_micros = 0;
 static bool mag_available = false;
 static bool prox_available = false;
-static int  proximity = 255;       
+static int  proximity = 255;
 
 static float mag_heading(float mx, float my) {
     float h = atan2f(my, mx) * 180.0f / M_PI;
@@ -103,7 +103,7 @@ void loop() {
     Serial1.println(proximity);
 
     static int dbg_counter = 0;
-    if (++dbg_counter >= 10) { 
+    if (++dbg_counter >= 10) {
         Serial.print("Heading: ");
         Serial.print(heading, 2);
         Serial.print("  Proximity: ");

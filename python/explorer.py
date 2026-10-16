@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-explorer.py — Autonomous pink-noise exploration controller for Phase 2.
-
-Connects to the ESP32 robot, sends pink-noise actions, receives frames,
-and saves the complete exploration dataset to disk.
-"""
 
 import os
 import time
@@ -16,26 +9,19 @@ import signal
 import numpy as np
 from pink_noise import generate_exploration_actions
 
-# ═══════════════════════════════════════════
-#  Configuration — edit these before running
-# ═══════════════════════════════════════════
-ESP32_HOST          = "192.168.1.100"       # TODO: set ESP32 IP
+ESP32_HOST          = "192.168.1.100"
 ESP32_PORT          = 8888
-OUTPUT_DIR          = "./data/session_01"   # output dir for this session
-DURATION_SEC        = 1800                  # exploration duration (1800 = 30 min)
-RATE_HZ             = 5.0                   # action/frame rate
-BETA                = 1.0                   # noise exponent (1.0=pink, 2.0=brown)
-SEED                = None                  # random seed (None = random)
-OBSTACLE_THRESH_CM  = 12                    # ultrasonic override threshold
-# ═══════════════════════════════════════════
+OUTPUT_DIR          = "./data/session_01"
+DURATION_SEC        = 1800
+RATE_HZ             = 5.0
+BETA                = 1.0
+SEED                = None
+OBSTACLE_THRESH_CM  = 12
 
-# Protocol constants (must match wifi_stream.h)
 MAGIC = 0x494D4731
 HEADER_SIZE = 11
 IMG_W, IMG_H, IMG_CH = 96, 96, 3
 
-# Actions: pink noise generates 0=forward, 1=left, 2=right
-# Mapped to firmware commands: F=NORTH, B=SOUTH, L=WEST, R=EAST, S=STAY
 ACTION_TO_CMD = {0: b'F', 1: b'L', 2: b'R', 3: b'S'}
 ACTION_NAMES = {0: "FWD", 1: "LFT", 2: "RGT", 3: "STP"}
 
@@ -59,7 +45,6 @@ def recv_exact(sock, nbytes):
 
 
 def receive_frame(sock):
-    """Receive one frame. Handles both JPEG and raw RGB protocols."""
     header = recv_exact(sock, HEADER_SIZE)
     magic = struct.unpack_from('<I', header, 0)[0]
     if magic != MAGIC:
@@ -68,8 +53,6 @@ def receive_frame(sock):
     ultrasonic_cm = struct.unpack_from('<H', header, 8)[0]
     last_action = header[10]
 
-    # Read image data — try JPEG (variable len) or fixed RGB
-    # The firmware sends raw RGB888 (96x96x3 = 27648 bytes) for collection
     img_size = IMG_W * IMG_H * IMG_CH
     img_data = recv_exact(sock, img_size)
     image = np.frombuffer(img_data, dtype=np.uint8).reshape(IMG_H, IMG_W, IMG_CH)
@@ -77,7 +60,6 @@ def receive_frame(sock):
 
 
 class ExplorationSession:
-    """Manages a single exploration session: actions, frames, metadata."""
 
     def __init__(self, output_dir):
         self.output_dir = output_dir

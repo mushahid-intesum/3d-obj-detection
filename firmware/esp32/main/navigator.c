@@ -1,17 +1,4 @@
-/**
- * @file navigator.c
- * @brief Autonomous image-goal navigation (single board).
- *
- * Core loop:
- *   1. Cache goal features (from first frame or NVS)
- *   2. Per step:
- *      a. Capture camera frame → downsample to 96×96
- *      b. Read proximity from Arduino
- *      c. Run student model: image + proximity → action logits
- *      d. Safety override if proximity blocked
- *      e. Execute motor action
- *      f. Stream frame to laptop (optional monitoring)
- */
+
 #include "navigator.h"
 #include "inference.h"
 #include "motor.h"
@@ -36,31 +23,27 @@
 
 static const char *TAG = "navigator";
 
-/** Downscaled image buffer — allocated in PSRAM. */
+
 static uint8_t *s_img_buf = NULL;
 
-/** Goal image buffer — allocated in PSRAM. */
+
 static uint8_t *s_goal_img = NULL;
 
 static const char *ACTION_NAMES[] = {"FWD", "RIGHT", "LEFT", "STOP"};
 
-/**
- * @brief Get a random turn direction for obstacle override.
- */
+
 static uint8_t random_turn(void)
 {
     return (rand() % 2 == 0) ? ACTION_TURN_RIGHT : ACTION_TURN_LEFT;
 }
 
-/**
- * @brief Navigation task — runs on core 1.
- */
+
 static void navigation_task(void *pvParam)
 {
     nav_goal_mode_t mode = (nav_goal_mode_t)(uintptr_t)pvParam;
     esp_err_t err;
 
-    /* Allocate image buffers in PSRAM */
+
     if (!s_img_buf) {
         s_img_buf = (uint8_t *)heap_caps_malloc(IMG_TARGET_SIZE, MALLOC_CAP_SPIRAM);
     }
@@ -73,13 +56,13 @@ static void navigation_task(void *pvParam)
         return;
     }
 
-    /* Obtain goal */
+
     bool have_goal = false;
 
     if (mode == NAV_GOAL_FROM_FLASH) {
         err = navigator_load_goal(s_goal_img);
         if (err == ESP_OK) {
-            /* Encode and cache goal features in the inference engine */
+
             err = inference_set_goal(s_goal_img);
             if (err == ESP_OK) {
                 have_goal = true;
@@ -90,7 +73,7 @@ static void navigation_task(void *pvParam)
         }
     }
 
-    /* Navigation loop */
+
     ESP_LOGI(TAG, "Starting navigation (max %d steps, %d Hz)...",
              NAV_MAX_STEPS, NAV_RATE_HZ);
 
@@ -102,7 +85,7 @@ static void navigation_task(void *pvParam)
     while (step < NAV_MAX_STEPS) {
         int64_t t_start = esp_timer_get_time();
 
-        /* 1. Capture camera frame */
+
         camera_fb_t *fb = camera_capture_frame();
         if (!fb) {
             ESP_LOGW(TAG, "Frame capture failed, skipping");
@@ -110,24 +93,16 @@ static void navigation_task(void *pvParam)
             continue;
         }
 
-        /* 2. Downsample to 96×96 RGB888
-         *
-         * NOTE: Camera is initialized in JPEG mode for streaming.
-         * For navigation, we need RGB565 input for image_downsample().
-         * TODO: Either switch camera to RGB565 mode before navigation,
-         *       or decode JPEG to RGB on-chip (more expensive).
-         *       For now, this assumes camera has been re-initialized
-         *       in RGB mode before navigator_start() is called.
-         */
+
         image_downsample(fb->buf, fb->width, fb->height, s_img_buf);
 
-        /* 3. Read proximity + IMU */
+
         uint8_t proximity = imu_get_proximity();
         bool prox_blocked = imu_proximity_blocked();
         float heading = imu_get_heading();
         if (heading < 0.0f) heading = 0.0f;
 
-        /* 4. If no goal yet, use first frame as goal */
+
         if (!have_goal) {
             memcpy(s_goal_img, s_img_buf, IMG_TARGET_SIZE);
             inference_set_goal(s_goal_img);
@@ -135,7 +110,7 @@ static void navigation_task(void *pvParam)
             ESP_LOGI(TAG, "Goal set from first frame");
             navigator_save_goal(s_goal_img);
 
-            /* Skip this step — need a different observation */
+
             last_action = ACTION_FORWARD;
             motor_execute_action(ACTION_FORWARD);
             camera_release_frame(fb);
@@ -143,7 +118,7 @@ static void navigation_task(void *pvParam)
             continue;
         }
 
-        /* 5. Run policy inference: image + proximity → action logits */
+
         err = inference_run_policy(s_img_buf, (float)proximity, action_logits);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Policy inference failed");
@@ -154,13 +129,13 @@ static void navigation_task(void *pvParam)
         int policy_idx = inference_argmax_i8(action_logits, 4);
         uint8_t action = (uint8_t)policy_idx;
 
-        /* 6. Safety override (always active) */
+
         if (prox_blocked && action == ACTION_FORWARD) {
             ESP_LOGW(TAG, "Proximity override! prox=%d, FWD → turn", proximity);
             action = random_turn();
         }
 
-        /* 7. Stream frame to laptop (monitoring, best-effort) */
+
         if (stream_is_connected()) {
             stream_send_frame(
                 frame_id, (uint32_t)step, action,
@@ -171,17 +146,17 @@ static void navigation_task(void *pvParam)
         camera_release_frame(fb);
         frame_id++;
 
-        /* 8. Execute action */
+
         motor_execute_action(action);
         last_action = action;
 
-        /* 9. Termination check */
+
         if (action == ACTION_STOP) {
             ESP_LOGI(TAG, "Policy chose STOP — goal reached!");
             break;
         }
 
-        /* 10. Logging */
+
         int64_t t_elapsed_us = esp_timer_get_time() - t_start;
         if (step % 5 == 0) {
             const char *aname = (action < 4) ? ACTION_NAMES[action] : "?";
@@ -226,12 +201,6 @@ esp_err_t navigator_start(nav_goal_mode_t mode)
     return ESP_OK;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  Goal image persistence (NVS)
- *
- *  Stores the raw 96×96×3 goal image (27648 bytes) in NVS.
- *  NVS max blob size is 508000 bytes, so this fits easily.
- * ═══════════════════════════════════════════════════════════════════════════ */
 
 esp_err_t navigator_save_goal(const uint8_t *goal_img)
 {

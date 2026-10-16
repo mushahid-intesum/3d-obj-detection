@@ -1,15 +1,3 @@
-#!/usr/bin/env python3
-"""
-distillation_quality.py — Tier 3: Offline distillation quality evaluation.
-
-Loads trained teacher and student checkpoints, evaluates on a held-out
-batch, and reports action agreement, KL divergence, and correlation MSE.
-
-Also supports QAT degradation comparison and distillation ablation.
-
-Usage:
-    python3 -m eval.distillation_quality
-"""
 
 import os
 import sys
@@ -26,9 +14,6 @@ from models import TeacherModel
 from student_model import StudentModel
 
 
-# ═══════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════
 DATASET_DIR         = "./data/offline_dataset"
 TEACHER_CKPT        = "./checkpoints/teacher/best.pt"
 DEVICE              = "cuda" if torch.cuda.is_available() else "cpu"
@@ -38,30 +23,20 @@ TEMPERATURE         = 4.0
 BATCH_SIZE          = 512
 PRINT_LATEX         = True
 
-# Single student evaluation
 STUDENT_CKPT        = "./checkpoints/student/best.pt"
 
-# Ablation: set label=path pairs. Leave empty to skip.
 ABLATION_CKPTS      = {
-    # "KL only":      "./checkpoints/student/kl_only.pt",
-    # "KL + hard":    "./checkpoints/student/kl_hard.pt",
-    # "KL + corr":    "./checkpoints/student/kl_corr.pt",
-    # "Full":         "./checkpoints/student/best.pt",
 }
 
-# QAT degradation: set paths. Leave None to skip.
-QAT_CKPT            = None   # "./checkpoints/student/qat_best.pt"
+QAT_CKPT            = None
 
-# Save results to JSON (set path or None)
-SAVE_JSON           = None   # "./eval_results.json"
-# ═══════════════════════════════════════════
+SAVE_JSON           = None
 
 
 ACTION_NAMES = ["FWD", "RIGHT", "LEFT", "STOP"]
 
 
 def load_teacher(ckpt_path):
-    """Load frozen teacher model."""
     teacher = TeacherModel(feat_dim=512, cue_dim=512,
                             num_actions=NUM_ACTIONS).to(DEVICE)
     ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
@@ -75,7 +50,6 @@ def load_teacher(ckpt_path):
 
 
 def load_student(ckpt_path):
-    """Load student model."""
     student = StudentModel(num_actions=NUM_ACTIONS).to(DEVICE)
     ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
     student.load_state_dict(ckpt["model_state"])
@@ -84,7 +58,6 @@ def load_student(ckpt_path):
 
 
 def load_eval_batch():
-    """Load a batch from dataset, or fall back to synthetic data."""
     try:
         from dataset import get_dataloader
         loader = get_dataloader(DATASET_DIR, batch_size=BATCH_SIZE,
@@ -103,38 +76,26 @@ def load_eval_batch():
 
 @torch.no_grad()
 def evaluate_student(teacher, student, batch):
-    """Compute all distillation quality metrics.
-
-    Returns dict with:
-        top1_agreement, kl_divergence_T4, kl_divergence_T1,
-        correlation_mse, per_action_agreement,
-        teacher_action_dist, student_action_dist
-    """
     obs = batch["obs"].to(DEVICE)
     goal = batch["goal"].to(DEVICE)
     prox = batch["obs_proximity"].to(DEVICE)
 
-    # Teacher forward
     teacher_cue = teacher.encode_and_correlate(obs, goal)
     teacher_logits = teacher.policy(teacher_cue, prox)
     teacher_actions = teacher_logits.argmax(dim=-1)
 
-    # Student forward
     student_corr_cue = student.get_cue(obs, goal)
     student_logits = student.forward_with_cue(student_corr_cue, prox)
     student_actions = student_logits.argmax(dim=-1)
 
-    # Projected cue for correlation MSE
     student_cue_proj = student.project_cue(student_corr_cue)
 
     B = obs.shape[0]
     metrics = OrderedDict()
 
-    # Top-1 action agreement
     agree = (teacher_actions == student_actions).float()
     metrics["top1_agreement"] = agree.mean().item()
 
-    # Per-action agreement
     per_action = {}
     for a in range(NUM_ACTIONS):
         mask = teacher_actions == a
@@ -144,23 +105,19 @@ def evaluate_student(teacher, student, batch):
             per_action[ACTION_NAMES[a]] = float("nan")
     metrics["per_action_agreement"] = per_action
 
-    # KL divergence at training temperature
     teacher_soft = F.softmax(teacher_logits / TEMPERATURE, dim=-1)
     student_log_soft = F.log_softmax(student_logits / TEMPERATURE, dim=-1)
     kl_t = F.kl_div(student_log_soft, teacher_soft, reduction="batchmean")
     metrics["kl_divergence_T4"] = kl_t.item()
 
-    # KL divergence at T=1 (deployment)
     teacher_soft_1 = F.softmax(teacher_logits, dim=-1)
     student_log_soft_1 = F.log_softmax(student_logits, dim=-1)
     kl_1 = F.kl_div(student_log_soft_1, teacher_soft_1, reduction="batchmean")
     metrics["kl_divergence_T1"] = kl_1.item()
 
-    # Correlation MSE
     corr_mse = F.mse_loss(student_cue_proj, teacher_cue)
     metrics["correlation_mse"] = corr_mse.item()
 
-    # Action distributions
     t_hist = torch.bincount(teacher_actions, minlength=NUM_ACTIONS).float() / B
     s_hist = torch.bincount(student_actions, minlength=NUM_ACTIONS).float() / B
     metrics["teacher_action_dist"] = {
@@ -174,7 +131,6 @@ def evaluate_student(teacher, student, batch):
 
 
 def print_metrics(metrics, label="Student"):
-    """Pretty-print evaluation metrics."""
     print(f"\n{'=' * 60}")
     print(f"  DISTILLATION QUALITY: {label}")
     print(f"{'=' * 60}")
@@ -202,7 +158,6 @@ def print_metrics(metrics, label="Student"):
 
 
 def print_comparison_table(all_results):
-    """Print multi-model comparison table."""
     print(f"\n{'=' * 72}")
     print(f"  DISTILLATION COMPARISON")
     print(f"{'=' * 72}")
@@ -217,7 +172,6 @@ def print_comparison_table(all_results):
 
 
 def print_latex_table(all_results):
-    """Print LaTeX table."""
     print("\n% ─── LaTeX Table ───")
     print(r"\begin{table}[t]")
     print(r"\centering")
@@ -238,17 +192,12 @@ def print_latex_table(all_results):
     print(r"\end{table}")
 
 
-# ═══════════════════════════════════════════
-#  Main
-# ═══════════════════════════════════════════
-
 if __name__ == "__main__":
     teacher = load_teacher(TEACHER_CKPT)
     batch = load_eval_batch()
 
     all_results = OrderedDict()
 
-    # Single student
     if os.path.exists(STUDENT_CKPT):
         print(f"\nLoading student from {STUDENT_CKPT}...")
         student = load_student(STUDENT_CKPT)
@@ -256,7 +205,6 @@ if __name__ == "__main__":
         print_metrics(metrics, label=os.path.basename(STUDENT_CKPT))
         all_results["Student (FP32)"] = metrics
 
-    # QAT variant
     if QAT_CKPT and os.path.exists(QAT_CKPT):
         print(f"\nLoading QAT student from {QAT_CKPT}...")
         qat_student = load_student(QAT_CKPT)
@@ -264,7 +212,6 @@ if __name__ == "__main__":
         print_metrics(qat_metrics, label="QAT")
         all_results["Student (QAT)"] = qat_metrics
 
-    # Ablation variants
     for label, path in ABLATION_CKPTS.items():
         if os.path.exists(path):
             print(f"\nLoading {label} from {path}...")
@@ -272,7 +219,6 @@ if __name__ == "__main__":
             variant_metrics = evaluate_student(teacher, variant, batch)
             all_results[label] = variant_metrics
 
-    # Fallback: untrained student (pipeline test)
     if not all_results:
         print("\n[!] No checkpoints found. Running with untrained student...")
         student = StudentModel(num_actions=NUM_ACTIONS).to(DEVICE)
@@ -281,7 +227,6 @@ if __name__ == "__main__":
         print_metrics(metrics, label="Untrained (random)")
         all_results["Untrained"] = metrics
 
-    # Summary
     if len(all_results) > 1:
         print_comparison_table(all_results)
 

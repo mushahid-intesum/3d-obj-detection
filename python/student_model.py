@@ -1,44 +1,25 @@
-"""
-student_model.py — Student model for ESP32-S3 deployment.
-
-~1M parameters. 4-stage hierarchical encoder (MicroDepthAnything architecture)
-producing feature maps, simplified cross-correlation → cue, scaled MLP policy
-with proximity input.
-
-All sizing controlled by constants below.
-"""
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ═══════════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════════
+ENC_CHANNELS       = [128, 256, 512, 1024]
+ENC_BLOCKS         = [2, 3, 4, 3]
+FEAT_DIM           = 1024
+FEAT_SIZE          = 6
 
-# Encoder — 4-stage hierarchical (mirrors MicroDepthAnything)
-ENC_CHANNELS       = [128, 256, 512, 1024]  # per-stage widths
-ENC_BLOCKS         = [2, 3, 4, 3]           # DSConv blocks per stage
-FEAT_DIM           = 1024                   # final feature channel dim
-FEAT_SIZE          = 6                      # spatial output (6×6)
+CORR_POOL_SIZE     = 4
+CORR_FLAT_DIM      = CORR_POOL_SIZE ** 2 * CORR_POOL_SIZE ** 2 + 2
+CUE_DIM            = CORR_FLAT_DIM + 1
 
-# Correlation
-CORR_POOL_SIZE     = 4                      # pool features to 4×4 before corr
-CORR_FLAT_DIM      = CORR_POOL_SIZE ** 2 * CORR_POOL_SIZE ** 2 + 2  # 16×16 + 2 = 258
-CUE_DIM            = CORR_FLAT_DIM + 1      # +1 for proximity → 259
+POLICY_HIDDEN      = [512, 256, 128]
+NUM_ACTIONS        = 4
 
-# Policy MLP
-POLICY_HIDDEN      = [512, 256, 128]        # hidden layer widths
-NUM_ACTIONS        = 4                      # F/R/L/STOP
-
-# Distillation projector
-PROJ_DIM           = 512                    # teacher cue dimension
-# ═══════════════════════════════════════════════
+PROJ_DIM           = 512
 
 
 class DepthwiseSeparable(nn.Module):
-    """Depthwise separable convolution: depthwise + pointwise."""
 
     def __init__(self, in_ch, out_ch, kernel=3, stride=2):
         super().__init__()
@@ -55,15 +36,6 @@ class DepthwiseSeparable(nn.Module):
 
 
 class TinyEncoder(nn.Module):
-    """
-    4-stage hierarchical encoder (MicroDepthAnything architecture).
-
-    Input:  (B, 3, 96, 96)
-    Output: (B, C3, 6, 6)
-
-    Uses depthwise-separable convolutions with configurable stage
-    widths and block counts.
-    """
 
     def __init__(self, channels=None, blocks=None):
         super().__init__()
@@ -74,21 +46,18 @@ class TinyEncoder(nn.Module):
         c0, c1, c2, c3 = channels
         b0, b1, b2, b3 = blocks
 
-        # Stem — 96×96 → 48×48
         self.stem = nn.Sequential(
             nn.Conv2d(3, c0, 3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(c0),
             nn.ReLU(inplace=True),
         )
 
-        # Hierarchical stages — each halves spatial resolution
-        self.stage1 = self._make_stage(c0, c1, b1)    # 48→24
-        self.stage2 = self._make_stage(c1, c2, b2)    # 24→12
-        self.stage3 = self._make_stage(c2, c3, b3)    # 12→6
+        self.stage1 = self._make_stage(c0, c1, b1)
+        self.stage2 = self._make_stage(c1, c2, b2)
+        self.stage3 = self._make_stage(c2, c3, b3)
 
     @staticmethod
     def _make_stage(in_ch, out_ch, n_blocks):
-        """Build a stage: first block strides, rest preserve resolution."""
         layers = [DepthwiseSeparable(in_ch, out_ch, stride=2)]
         for _ in range(n_blocks - 1):
             layers.append(DepthwiseSeparable(out_ch, out_ch, stride=1))
@@ -103,11 +72,6 @@ class TinyEncoder(nn.Module):
 
 
 class SimplifiedCorrelation(nn.Module):
-    """
-    Simplified correlation for MCU: NxN cross-correlation + 2 L/R scores.
-
-    Output dim = pool_size⁴ + 2 = 258 (before proximity concat).
-    """
 
     def __init__(self, feat_dim=None, feat_h=None, feat_w=None, pool_size=4):
         super().__init__()
@@ -115,67 +79,48 @@ class SimplifiedCorrelation(nn.Module):
         self.feat_h = feat_h or FEAT_SIZE
         self.feat_w = feat_w or FEAT_SIZE
         self.pool_size = pool_size
-        self.n_positions = pool_size * pool_size  # 16
+        self.n_positions = pool_size * pool_size
         self.pool = nn.AdaptiveAvgPool2d(pool_size)
 
     def forward(self, f_goal, f_obs):
-        """
-        Args:
-            f_goal: (B, C, H, W)  e.g. (B, 1024, 8, 8)
-            f_obs:  (B, C, H, W)
-        Returns:
-            cue: (B, 258)  — correlation flat + L/R scores
-        """
         B = f_goal.size(0)
-        ps = self.pool_size  # 4
+        ps = self.pool_size
 
-        # Pool to fixed spatial size: (B, C, H, W) → (B, C, ps, ps)
-        g_pooled = self.pool(f_goal)  # (B, C, 4, 4)
-        o_pooled = self.pool(f_obs)   # (B, C, 4, 4)
+        g_pooled = self.pool(f_goal)
+        o_pooled = self.pool(f_obs)
 
-        # Flatten spatial: (B, C, ps²) → (B, ps², C)
         g = g_pooled.view(B, self.feat_dim, -1).permute(0, 2, 1)
         o = o_pooled.view(B, self.feat_dim, -1).permute(0, 2, 1)
 
-        # L2 normalize
         g_norm = F.normalize(g, dim=-1)
         o_norm = F.normalize(o, dim=-1)
 
-        # NxN cross-correlation: (B, ps², ps²)
         cross_corr = torch.bmm(g_norm, o_norm.permute(0, 2, 1))
-        cross_flat = cross_corr.reshape(B, self.n_positions ** 2)  # (B, 256)
+        cross_flat = cross_corr.reshape(B, self.n_positions ** 2)
 
-        # Left/Right similarity (on pooled grid)
         left_idx = [i * ps for i in range(ps)]
         right_idx = [i * ps + (ps - 1) for i in range(ps)]
 
-        g_left = g_norm[:, left_idx, :].mean(dim=1)   # (B, C)
+        g_left = g_norm[:, left_idx, :].mean(dim=1)
         g_right = g_norm[:, right_idx, :].mean(dim=1)
         o_left = o_norm[:, left_idx, :].mean(dim=1)
         o_right = o_norm[:, right_idx, :].mean(dim=1)
 
         lr_sim = torch.stack([
-            (g_left * o_left).sum(dim=-1),    # left similarity
-            (g_right * o_right).sum(dim=-1),  # right similarity
-        ], dim=-1)  # (B, 2)
+            (g_left * o_left).sum(dim=-1),
+            (g_right * o_right).sum(dim=-1),
+        ], dim=-1)
 
-        # Concatenate: ps⁴ + 2 = 258
         cue = torch.cat([cross_flat, lr_sim], dim=-1)
         return cue
 
 
 class TinyPolicy(nn.Module):
-    """
-    Scaled MLP policy network with proximity input.
-
-    Default: (258 + 1 proximity) = 259 → 512 → 256 → 128 → 4
-    Proximity is concatenated to the correlation cue before the MLP.
-    """
 
     def __init__(self, cue_dim=None, hidden=None, num_actions=None):
         super().__init__()
         if cue_dim is None:
-            cue_dim = CUE_DIM   # 259 (includes proximity)
+            cue_dim = CUE_DIM
         if hidden is None:
             hidden = POLICY_HIDDEN
         if num_actions is None:
@@ -190,21 +135,10 @@ class TinyPolicy(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, cue):
-        """Args:
-            cue: (B, cue_dim) — correlation flat + proximity already concatenated.
-        Returns:
-            (B, num_actions) action logits.
-        """
         return self.net(cue)
 
 
 class StudentModel(nn.Module):
-    """
-    Complete student model for ESP32-S3 deployment.
-
-    TinyEncoder (weight-shared) → SimplifiedCorrelation → concat(proximity) → TinyPolicy
-    ~1M parameters → ~1MB INT8
-    """
 
     def __init__(self, num_actions=None):
         super().__init__()
@@ -214,63 +148,31 @@ class StudentModel(nn.Module):
         self.correlation = SimplifiedCorrelation()
         self.policy = TinyPolicy(num_actions=num_actions)
 
-        # Projection layer for correlation distillation (discarded after training)
-        # Projects from CORR_FLAT_DIM (258, before proximity) to teacher cue dim
         self.corr_projector = nn.Linear(CORR_FLAT_DIM, PROJ_DIM)
 
     def encode(self, x):
-        """Encode a single image to feature map."""
         return self.encoder(x)
 
     def get_cue(self, obs, goal):
-        """Compute correlation cue from raw images (without proximity).
-
-        Returns the raw 258-dim correlation vector (before proximity concat).
-        """
         f_obs = self.encoder(obs)
         f_goal = self.encoder(goal)
-        return self.correlation(f_goal, f_obs)   # (B, 258)
+        return self.correlation(f_goal, f_obs)
 
     def forward(self, obs, goal, obs_proximity):
-        """Full forward: returns action logits.
-
-        Args:
-            obs:       (B, 3, 96, 96) current observation
-            goal:      (B, 3, 96, 96) goal image
-            obs_proximity: (B,) normalized proximity distance [0, 1]
-
-        Returns:
-            (B, num_actions) action logits
-        """
-        corr_cue = self.get_cue(obs, goal)                   # (B, 258)
+        corr_cue = self.get_cue(obs, goal)
         cue = torch.cat([corr_cue,
-                         obs_proximity.unsqueeze(-1)], dim=-1)   # (B, 259)
+                         obs_proximity.unsqueeze(-1)], dim=-1)
         return self.policy(cue)
 
     def forward_with_cue(self, corr_cue, obs_proximity):
-        """Forward from pre-computed correlation cue (used in distillation).
-
-        Args:
-            corr_cue:  (B, 258) raw correlation output
-            obs_proximity: (B,) normalized proximity distance [0, 1]
-
-        Returns:
-            (B, num_actions) action logits
-        """
         cue = torch.cat([corr_cue,
-                         obs_proximity.unsqueeze(-1)], dim=-1)   # (B, 259)
+                         obs_proximity.unsqueeze(-1)], dim=-1)
         return self.policy(cue)
 
     def project_cue(self, corr_cue):
-        """Project raw correlation cue to teacher dim for distillation matching.
-
-        Args:
-            corr_cue: (B, 258) — raw correlation output (no proximity).
-        """
         return self.corr_projector(corr_cue)
 
     def get_deploy_params(self):
-        """Count only deployment parameters (exclude projector)."""
         total = 0
         for name, p in self.named_parameters():
             if "corr_projector" not in name:
@@ -279,7 +181,6 @@ class StudentModel(nn.Module):
 
 
 def print_model_summary():
-    """Print parameter counts per component."""
     model = StudentModel()
 
     enc = sum(p.numel() for p in model.encoder.parameters())
@@ -311,7 +212,6 @@ def print_model_summary():
 if __name__ == "__main__":
     print_model_summary()
 
-    # Quick forward pass test
     model = StudentModel()
     obs = torch.randn(2, 3, 96, 96)
     goal = torch.randn(2, 3, 96, 96)
@@ -320,7 +220,6 @@ if __name__ == "__main__":
     print(f"\nForward pass: obs {obs.shape} + proximity {proximity.shape} → logits {logits.shape}")
     print(f"Logits: {logits}")
 
-    # Test distillation helpers
     corr_cue = model.get_cue(obs, goal)
     proj = model.project_cue(corr_cue)
     print(f"Correlation cue: {corr_cue.shape}")

@@ -1,16 +1,4 @@
-/**
- * @file motor.c
- * @brief DRV8833 motor driver using LEDC PWM on ESP32-S3.
- *
- * Motor A (left):  IN1/IN2 direction, ENA speed
- * Motor B (right): IN3/IN4 direction, ENB speed
- *
- * Actions (4-action space for free exploration):
- *   0 FORWARD:    both forward
- *   1 TURN_RIGHT: pivot right (left fwd, right rev)
- *   2 TURN_LEFT:  pivot left  (left rev, right fwd)
- *   3 STOP:       stop
- */
+
 #include "motor.h"
 #include "config.h"
 
@@ -24,7 +12,6 @@
 
 static const char *TAG = "motor";
 
-/* ── PWM channels ── */
 
 static void set_speed(uint32_t lspeed, uint32_t rspeed)
 {
@@ -35,11 +22,10 @@ static void set_speed(uint32_t lspeed, uint32_t rspeed)
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
 }
 
-/* ── Public API ── */
 
 esp_err_t motor_init(void)
 {
-    /* Configure direction GPIOs */
+
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << MOTOR_IN1) | (1ULL << MOTOR_IN2) |
                         (1ULL << MOTOR_IN3) | (1ULL << MOTOR_IN4),
@@ -50,7 +36,7 @@ esp_err_t motor_init(void)
     };
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 
-    /* LEDC timer */
+
     ledc_timer_config_t timer = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
         .duty_resolution = (ledc_timer_bit_t)MOTOR_PWM_BITS,
@@ -60,7 +46,7 @@ esp_err_t motor_init(void)
     };
     ESP_ERROR_CHECK(ledc_timer_config(&timer));
 
-    /* Channel A (left motor) */
+
     ledc_channel_config_t ch_a = {
         .gpio_num   = MOTOR_ENA,
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -71,7 +57,7 @@ esp_err_t motor_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ch_a));
 
-    /* Channel B (right motor) */
+
     ledc_channel_config_t ch_b = {
         .gpio_num   = MOTOR_ENB,
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -94,8 +80,8 @@ void motor_stop(void)
 
 void motor_reverse(uint32_t duration_ms)
 {
-    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  
-    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  
+    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);
+    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);
     set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
@@ -103,8 +89,8 @@ void motor_reverse(uint32_t duration_ms)
 
 void motor_forward(uint32_t duration_ms)
 {
-    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  
-    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  
+    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);
+    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);
     set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
@@ -112,8 +98,8 @@ void motor_forward(uint32_t duration_ms)
 
 void motor_turn_left(uint32_t duration_ms)
 {
-    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);  
-    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);  
+    gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);
+    gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);
     set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
@@ -121,8 +107,8 @@ void motor_turn_left(uint32_t duration_ms)
 
 void motor_turn_right(uint32_t duration_ms)
 {
-    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);  
-    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);  
+    gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);
+    gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);
     set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
     vTaskDelay(pdMS_TO_TICKS(duration_ms));
     motor_stop();
@@ -160,20 +146,18 @@ void motor_execute_action(uint8_t action_id)
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- *  Closed-loop heading control (requires IMU via UART)
- * ═══════════════════════════════════════════════════════════════════════════ */
+
 #include "imu_uart.h"
 
-#define HEADING_TOLERANCE  3.0f    /* default degrees */
-#define HEADING_POLL_MS    20      /* check heading every 20ms */
+#define HEADING_TOLERANCE  3.0f
+#define HEADING_POLL_MS    20
 
 bool motor_turn_to_heading(float target_heading, float tolerance_deg,
                            uint32_t timeout_ms)
 {
     if (!imu_is_ready()) {
         ESP_LOGW(TAG, "IMU not ready — falling back to timed turn");
-        /* Rough fallback: assume ~180°/s turn rate */
+
         float diff = imu_angle_diff(target_heading, imu_get_heading());
         uint32_t ms = (uint32_t)(fabsf(diff) / 180.0f * TURN_90_MS * 2);
         if (diff > 0) motor_turn_right(ms);
@@ -195,19 +179,18 @@ bool motor_turn_to_heading(float target_heading, float tolerance_deg,
             return true;
         }
 
-        /* Turn in the shortest direction */
+
         if (diff > 0) {
-            /* Need to turn right */
+
             gpio_set_level(MOTOR_IN1, 1); gpio_set_level(MOTOR_IN2, 0);
             gpio_set_level(MOTOR_IN3, 0); gpio_set_level(MOTOR_IN4, 1);
             set_speed(0, RIGHT_MOTOR_SPEED);
         } else {
-            /* Need to turn left */
+
             gpio_set_level(MOTOR_IN1, 0); gpio_set_level(MOTOR_IN2, 1);
             gpio_set_level(MOTOR_IN3, 1); gpio_set_level(MOTOR_IN4, 0);
             set_speed(0, RIGHT_MOTOR_SPEED);
         }
-        // set_speed(LEFT_MOTOR_SPEED, RIGHT_MOTOR_SPEED);
 
         vTaskDelay(pdMS_TO_TICKS(300));
         elapsed += timeout_ms;
@@ -223,7 +206,7 @@ bool motor_turn_relative(float delta_deg, float tolerance, uint32_t timeout_ms)
 {
     float current = imu_get_heading();
     if (current < 0) {
-        /* IMU not ready — open-loop fallback */
+
         uint32_t ms = (uint32_t)(fabsf(delta_deg) / 45.0f * TURN_45_MS);
         if (delta_deg > 0) motor_turn_right(ms);
         else               motor_turn_left(ms);

@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-"""
-compression_metrics.py — Tier 1: Parameter counts, FLOPs, model sizes.
-
-Outputs tables comparing teacher vs student and a LaTeX-ready table.
-
-Usage:
-    python3 -m eval.compression_metrics
-"""
 
 import os
 import sys
@@ -21,22 +12,14 @@ from models import TeacherModel
 from student_model import StudentModel
 
 
-# ═══════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════
 IMG_SIZE            = 96
 PRINT_LATEX         = True
 
-# Paths to exported TFLite models (set when available)
 TFLITE_PATHS        = [
-    # "./exports/encoder_int8.tflite",
-    # "./exports/policy_int8.tflite",
 ]
-# ═══════════════════════════════════════════
 
 
 def count_params(model):
-    """Count parameters per named child module."""
     counts = OrderedDict()
     for name, module in model.named_children():
         counts[name] = sum(p.numel() for p in module.parameters())
@@ -45,12 +28,10 @@ def count_params(model):
 
 
 def fmt(n):
-    """Format parameter count with commas and M suffix."""
     return f"{n:>12,}  ({n / 1e6:.2f}M)"
 
 
 def print_param_table(teacher_counts, student_counts, deploy_params):
-    """Print side-by-side parameter comparison."""
     print("\n" + "=" * 72)
     print("  PARAMETER COUNT COMPARISON")
     print("=" * 72)
@@ -80,12 +61,7 @@ def print_param_table(teacher_counts, student_counts, deploy_params):
     print("=" * 72)
 
 
-# ═══════════════════════════════════════════
-#  FLOPs / MACs estimation
-# ═══════════════════════════════════════════
-
 def estimate_encoder_macs(encoder, img_size):
-    """Estimate total encoder MACs by hooking Conv2d and Linear layers."""
     mac_log = []
 
     def hook_fn(module, inp, out):
@@ -117,7 +93,6 @@ def estimate_encoder_macs(encoder, img_size):
 
 
 def estimate_correlation_macs_teacher(feat_h=12, feat_w=12, feat_dim=512):
-    """MACs for teacher correlation (pairwise dots + conv fusion + projection)."""
     hw = feat_h * feat_w
     dot_macs = hw * hw * feat_dim
     conv_macs = 128 * 9 * 8 * 8 + 64 * 128 * 9 * 8 * 8
@@ -126,7 +101,6 @@ def estimate_correlation_macs_teacher(feat_h=12, feat_w=12, feat_dim=512):
 
 
 def estimate_correlation_macs_student(pool_size=4, feat_dim=1024):
-    """MACs for student parameterless correlation (pool + norm + dots)."""
     positions = pool_size * pool_size
     norm_macs = 2 * positions * feat_dim * 2
     dot_macs = positions * positions * feat_dim
@@ -135,7 +109,6 @@ def estimate_correlation_macs_student(pool_size=4, feat_dim=1024):
 
 
 def estimate_policy_macs(hidden_dims, input_dim, num_actions=4):
-    """MACs for MLP policy."""
     macs = 0
     prev = input_dim
     for h in hidden_dims:
@@ -146,7 +119,6 @@ def estimate_policy_macs(hidden_dims, input_dim, num_actions=4):
 
 
 def print_macs_table(teacher_macs, student_macs):
-    """Print MACs comparison table."""
     print("\n" + "=" * 72)
     print("  MULTIPLY-ACCUMULATE OPERATIONS (MACs) PER INFERENCE STEP")
     print("=" * 72)
@@ -167,12 +139,7 @@ def print_macs_table(teacher_macs, student_macs):
     print("=" * 72)
 
 
-# ═══════════════════════════════════════════
-#  TFLite model sizes
-# ═══════════════════════════════════════════
-
 def print_tflite_sizes(paths):
-    """Print file sizes of TFLite models."""
     valid = [p for p in paths if os.path.exists(p)]
     if not valid:
         return
@@ -185,13 +152,8 @@ def print_tflite_sizes(paths):
     print("=" * 72)
 
 
-# ═══════════════════════════════════════════
-#  LaTeX output
-# ═══════════════════════════════════════════
-
 def print_latex_table(teacher_counts, student_counts, deploy_params,
                       teacher_macs, student_macs):
-    """Print LaTeX table to stdout."""
     t_total = teacher_counts["total"]
     t_enc = teacher_counts.get("encoder", 0)
     t_corr = teacher_counts.get("correlation", 0)
@@ -230,10 +192,6 @@ def print_latex_table(teacher_counts, student_counts, deploy_params,
     print(r"\end{table}")
 
 
-# ═══════════════════════════════════════════
-#  Main
-# ═══════════════════════════════════════════
-
 if __name__ == "__main__":
     teacher = TeacherModel()
     student = StudentModel()
@@ -244,7 +202,6 @@ if __name__ == "__main__":
 
     print_param_table(teacher_counts, student_counts, deploy_params)
 
-    # MACs
     t_enc_macs = estimate_encoder_macs(teacher.encoder, IMG_SIZE)
     t_corr_macs = estimate_correlation_macs_teacher()
     t_pol_macs = estimate_policy_macs([256, 128], input_dim=513)
@@ -268,7 +225,6 @@ if __name__ == "__main__":
 
     print_macs_table(teacher_macs, student_macs)
 
-    # Architecture comparison
     print("\n" + "=" * 72)
     print("  ARCHITECTURE COMPARISON")
     print("=" * 72)
@@ -287,10 +243,8 @@ if __name__ == "__main__":
         print(f"  {component:<25} {teacher_val:<28} {student_val:<28}")
     print("=" * 72)
 
-    # TFLite sizes
     print_tflite_sizes(TFLITE_PATHS)
 
-    # LaTeX
     if PRINT_LATEX:
         print_latex_table(teacher_counts, student_counts, deploy_params,
                           teacher_macs, student_macs)

@@ -1,15 +1,3 @@
-#!/usr/bin/env python3
-"""
-qat_degradation.py — Tier 3b: QAT degradation analysis.
-
-Compares action agreement and KL divergence across three stages:
-  1. Post-distillation FP32 student
-  2. Post-QAT fake-INT8 student
-  3. Exported TFLite INT8 model (via TFLite interpreter)
-
-Usage:
-    python3 -m eval.qat_degradation
-"""
 
 import os
 import sys
@@ -25,9 +13,6 @@ from models import TeacherModel
 from student_model import StudentModel
 
 
-# ═══════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════
 DATASET_DIR         = "./data/offline_dataset"
 TEACHER_CKPT        = "./checkpoints/teacher/best.pt"
 DEVICE              = "cuda" if torch.cuda.is_available() else "cpu"
@@ -35,14 +20,11 @@ DEVICE              = "cuda" if torch.cuda.is_available() else "cpu"
 NUM_ACTIONS         = 4
 BATCH_SIZE          = 256
 
-# Checkpoint paths (set to None to skip that stage)
 FP32_CKPT           = "./checkpoints/student/best.pt"
-QAT_CKPT            = None   # "./checkpoints/student/qat_best.pt"
+QAT_CKPT            = None
 
-# TFLite model paths (both needed for TFLite eval)
-TFLITE_ENCODER      = None   # "./exports/encoder_int8.tflite"
-TFLITE_POLICY       = None   # "./exports/policy_int8.tflite"
-# ═══════════════════════════════════════════
+TFLITE_ENCODER      = None
+TFLITE_POLICY       = None
 
 
 def load_teacher(path):
@@ -80,7 +62,6 @@ def load_eval_batch():
 
 @torch.no_grad()
 def evaluate_pytorch_model(teacher, student, batch):
-    """Evaluate a PyTorch student against teacher."""
     obs = batch["obs"].to(DEVICE)
     goal = batch["goal"].to(DEVICE)
     prox = batch["obs_proximity"].to(DEVICE)
@@ -102,7 +83,6 @@ def evaluate_pytorch_model(teacher, student, batch):
 
 
 def evaluate_tflite_model(teacher, batch):
-    """Evaluate exported TFLite INT8 models against teacher."""
     try:
         import tensorflow as tf
     except ImportError:
@@ -138,7 +118,6 @@ def evaluate_tflite_model(teacher, batch):
         enc_scale = enc_input[0]["quantization"][0]
         enc_zp = enc_input[0]["quantization"][1]
 
-        # Encode observation
         if enc_scale > 0:
             obs_q = np.clip(obs_np[i:i+1] / enc_scale + enc_zp,
                             -128, 127).astype(np.int8)
@@ -148,7 +127,6 @@ def evaluate_tflite_model(teacher, batch):
         enc_interp.invoke()
         obs_feat = enc_interp.get_tensor(enc_output[0]["index"])
 
-        # Encode goal
         if enc_scale > 0:
             goal_q = np.clip(goal_np[i:i+1] / enc_scale + enc_zp,
                              -128, 127).astype(np.int8)
@@ -158,7 +136,6 @@ def evaluate_tflite_model(teacher, batch):
         enc_interp.invoke()
         goal_feat = enc_interp.get_tensor(enc_output[0]["index"])
 
-        # Dequantize
         out_scale = enc_output[0]["quantization"][0]
         out_zp = enc_output[0]["quantization"][1]
         if out_scale > 0:
@@ -168,7 +145,6 @@ def evaluate_tflite_model(teacher, batch):
             obs_f = obs_feat.astype(np.float32)
             goal_f = goal_feat.astype(np.float32)
 
-        # Correlation (parameterless, matching C implementation)
         obs_flat = obs_f.reshape(-1, obs_f.shape[-1])
         goal_flat = goal_f.reshape(-1, goal_f.shape[-1])
         obs_norm = obs_flat / (np.linalg.norm(obs_flat, axis=-1,
@@ -183,7 +159,6 @@ def evaluate_tflite_model(teacher, batch):
 
         cue = np.concatenate([corr, [left_score, right_score, prox_np[i]]])
 
-        # Policy inference
         pol_scale = pol_input[0]["quantization"][0]
         pol_zp = pol_input[0]["quantization"][1]
         if pol_scale > 0:
@@ -201,7 +176,6 @@ def evaluate_tflite_model(teacher, batch):
 
 
 def print_results(results):
-    """Print degradation table."""
     print(f"\n{'=' * 60}")
     print(f"  QAT DEGRADATION ANALYSIS")
     print(f"{'=' * 60}")
@@ -214,7 +188,6 @@ def print_results(results):
         print(f"  {stage:<30} {agree:>12} {kl:>12}")
     print(f"{'=' * 60}")
 
-    # LaTeX
     print("\n% ─── LaTeX Table ───")
     print(r"\begin{table}[t]")
     print(r"\centering")
@@ -233,10 +206,6 @@ def print_results(results):
     print(r"\end{tabular}")
     print(r"\end{table}")
 
-
-# ═══════════════════════════════════════════
-#  Main
-# ═══════════════════════════════════════════
 
 if __name__ == "__main__":
     teacher = load_teacher(TEACHER_CKPT)

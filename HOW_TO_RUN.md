@@ -1,123 +1,156 @@
-# MCU ImageNav — How to Run Everything
+# TinyNav — How to Run
 
-> End-to-end guide: from wiring the robot to autonomous image-goal navigation.
+End-to-end guide from wiring the robot to autonomous image-goal navigation on ESP32-S3.
+
+---
+
+## Pipeline Overview
+
+```mermaid
+graph TD
+    A[Pink-Noise Exploration] --> B[Hindsight Goal Relabeling]
+    B --> C[Teacher Training — IQL]
+    C --> D[Knowledge Distillation]
+    D --> E[Quantization-Aware Training]
+    E --> F[TFLite INT8 Export]
+    F --> G[ESP32-S3 Deployment]
+```
+
+| Stage | What happens |
+|---|---|
+| **Exploration** | Robot drives autonomously using temporally correlated pink noise. APDS9960 proximity sensor triggers obstacle avoidance. Raw frames, actions, headings, and proximity are logged. |
+| **Relabeling** | Future frames are retroactively labeled as goals. Transforms aimless exploration into a goal-conditioned RL dataset without human annotation. |
+| **Teacher training** | A 24M-parameter model (ResNet encoder + learned pyramid correlation + IQL value heads) learns a navigation policy from the offline dataset. |
+| **Distillation** | A 4M-parameter student (depthwise-separable encoder + parameterless dot-product correlation) is trained to match the teacher's action distributions and correlation cues. |
+| **QAT** | Fake INT8 quantization nodes are inserted during fine-tuning so the student learns to compensate for rounding errors. |
+| **Export** | The quantized student is split into encoder and policy TFLite models and converted to C header arrays. |
+| **Deployment** | Models are flashed to ESP32-S3. Inference runs at 5 Hz entirely on-device with no cloud connectivity. |
+
+For full architectural details, loss formulations, and compression analysis, see the [technical report](TODO_LINK_TO_PDF).
 
 ---
 
 ## Prerequisites
 
 ### Hardware
+
 | Part | Specification |
 |---|---|
-| MCU | ESP32-S3 with PSRAM |
+| ESP32-S3 | PSRAM-equipped dev board (e.g. Freenove ESP32-S3) |
 | Camera | OV3660 3MP 160° fisheye, 24-pin |
-| Motor Driver | DRV8833 dual H-bridge |
+| Motor driver | DRV8833 dual H-bridge |
 | Motors | 2× DC gear motors (differential drive) |
-| Ultrasonic | HC-SR04 (with voltage divider for 3.3V echo) |
-| Power | Battery pack (motor) + USB or LiPo (ESP32) |
-| Button | Momentary push button (for goal capture) |
+| IMU board | Arduino Nano 33 BLE Sense Rev2 (BMI270 + BMM150 + APDS9960) |
+| Power | 8V battery for Arduino VIN, USB or LiPo for ESP32 |
 
 ### Software
+
 | Tool | Version |
 |---|---|
-| ESP-IDF | v5.x ([install guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/)) |
+| ESP-IDF | v5.x |
+| Arduino IDE | 2.x (for Nano 33 BLE Sense Rev2) |
 | Python | 3.9+ |
-| PyTorch | 2.x (for training, GPU recommended) |
-| TensorFlow | 2.x (for TFLite conversion only) |
+| PyTorch | 2.x (GPU recommended for training) |
+| TensorFlow | 2.x (TFLite conversion only) |
 
 ---
 
-## Step 0: Pin Wiring & Configuration
+## Step 0: Wiring
 
-### 0.1 Wire the robot
+### 0.1 ESP32-S3 connections
 
-Connect all components to ESP32-S3 GPIOs. Record which GPIO you used for each signal.
+All pin assignments are in `firmware/esp32/main/include/config.h`.
 
-### 0.2 Edit `esp32/main/include/config.h`
+**Camera (OV3660)**
 
-Replace every `GPIO_NUM_XX` with your actual pin numbers:
+| Signal | GPIO |
+|---|---|
+| XCLK | 15 |
+| SIOD/SIOC | 4, 5 |
+| D0-D7 | 11, 9, 8, 10, 12, 18, 17, 16 |
+| VSYNC/HREF/PCLK | 6, 7, 13 |
 
-```c
-// Example — your pins WILL be different
-#define CAM_PIN_XCLK    GPIO_NUM_15
-#define CAM_PIN_SIOD    GPIO_NUM_4
-#define CAM_PIN_SIOC    GPIO_NUM_5
-// ... etc for all camera data/sync pins ...
+**Motors (DRV8833)**
 
-#define MOTOR_IN1       GPIO_NUM_36
-#define MOTOR_IN2       GPIO_NUM_37
-#define MOTOR_IN3       GPIO_NUM_38
-#define MOTOR_IN4       GPIO_NUM_39
-#define MOTOR_ENA       GPIO_NUM_40
-#define MOTOR_ENB       GPIO_NUM_41
+| Signal | GPIO |
+|---|---|
+| IN1-IN4 | 38, 39, 40, 41 |
+| ENA/ENB | 42, 14 |
 
-#define US_TRIG_PIN     GPIO_NUM_10
-#define US_ECHO_PIN     GPIO_NUM_11
+**Arduino UART (IMU + proximity)**
 
-#define BTN_GOAL_PIN    GPIO_NUM_0
-```
+| Signal | GPIO |
+|---|---|
+| UART RX (from Arduino TX) | 19 |
+| UART TX (to Arduino RX) | 21 |
+| GND | GND (shared with Arduino GND) |
 
-### 0.3 Set WiFi credentials
+### 0.2 Arduino Nano 33 BLE Sense Rev2
 
-Edit `esp32/main/Kconfig.projbuild` or run `idf.py menuconfig` after building:
+The Arduino runs the `imu_heading.ino` sketch. It reads the BMI270 gyroscope, BMM150 magnetometer, and APDS9960 proximity sensor, then sends fused heading and proximity over Serial1 (UART) at 50 Hz.
 
-```
-MCU ImageNav Configuration →
-  WiFi SSID: your_network_name
-  WiFi Password: your_password
-```
+Connect Arduino TX1 to ESP32 GPIO 19 and share GND between both boards.
+
+Power the Arduino from 8V battery on VIN. The onboard regulator steps it to 3.3V.
 
 ---
 
-## Step 1: Build & Flash the Firmware
+## Step 1: Flash the Arduino
 
-### 1.1 Set firmware mode
+Open `firmware/arduino/imu_heading/imu_heading.ino` in Arduino IDE.
 
-In `esp32/main/main.c`, set the mode:
+Install these libraries via Library Manager:
+- `Arduino_BMI270_BMM150`
+- `Arduino_APDS9960`
 
-```c
-// For data collection (Phase 1/2):
-static const firmware_mode_t FIRMWARE_MODE = MODE_COLLECT;
+Select board "Arduino Nano 33 BLE" and upload.
 
-// For navigation (Phase 7):
-static const firmware_mode_t FIRMWARE_MODE = MODE_NAVIGATE;
+Verify on Serial Monitor (115200 baud):
+```
+IMU + Proximity ready
+Gyro sample rate: 104.00
+Magnetometer: YES
+APDS9960: YES
+Heading: 45.32  Proximity: 255
+Heading: 45.30  Proximity: 248
 ```
 
-### 1.2 Build
+Proximity values: 0 = very close, 255 = nothing detected.
+
+---
+
+## Step 2: Build and Flash the ESP32
+
+### 2.1 Set WiFi credentials
+
+Edit `firmware/esp32/main/include/config.h` or run `idf.py menuconfig`.
+
+### 2.2 Build and flash
 
 ```bash
-cd esp32
+cd firmware/esp32
 idf.py set-target esp32s3
 idf.py build
-```
-
-### 1.3 Flash & Monitor
-
-```bash
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-You should see:
+On first boot without models, the firmware enters collection mode automatically:
 ```
-╔══════════════════════════════════╗
-║   MCU ImageNav Firmware           ║
-║   Mode: COLLECT                   ║
-╚══════════════════════════════════╝
-Initializing camera...
-Initializing ultrasonic...
-Initializing motors...
-Connecting to WiFi...
-Connected! IP: 192.168.1.100
-TCP server listening on port 8888...
+║   ImageNav — Single Board             ║
+[1/5] Initializing camera...
+[2/5] Initializing motors...
+[3/5] Initializing IMU UART...
+[4/5] Proximity sensor active via Arduino UART
+[5/5] Connecting to WiFi...
+No policy model — COLLECTION mode
+Starting explorer...
 ```
 
-Note the IP address printed — you need it for the Python scripts.
+Note the IP address printed after WiFi connects.
 
 ---
 
-## Step 2: Validate Hardware (Phase 1)
-
-### 2.1 Test with receiver
+## Step 3: Validate Hardware
 
 On your laptop:
 
@@ -126,101 +159,50 @@ cd python
 pip install -r requirements.txt
 ```
 
-Edit `receiver.py` — set `ESP32_HOST`:
-
-```python
-ESP32_HOST = "192.168.1.100"    # ← IP from Step 1.3
-```
-
-Run:
+Edit `receiver.py` and set `ESP32_HOST` to the IP from Step 2.
 
 ```bash
-python receiver.py
+python3 receiver.py
 ```
 
-You should see a live OpenCV window showing 48×48 upscaled camera frames and ultrasonic distance readings in the terminal. Press `q` to quit.
-
-### 2.2 Verify motors
-
-The firmware runs a motor self-test on boot (removed in latest version — you can add it back or test via the TCP commands). In the receiver, the robot responds to commands from `explorer.py`.
+You should see live camera frames and sensor readings. Press `q` to quit.
 
 ---
 
-## Step 3: Collect Exploration Data (Phase 2)
-
-### 3.1 Configure explorer
+## Step 4: Collect Exploration Data
 
 Edit `python/explorer.py`:
 
 ```python
-ESP32_HOST          = "192.168.1.100"       # ESP32 IP
-OUTPUT_DIR          = "./data/session_01"   # unique per session
-DURATION_SEC        = 1800                  # 30 min
-RATE_HZ             = 5.0                   # 5 frames/sec
-BETA                = 1.0                   # pink noise (1.0 recommended)
-SEED                = 42                    # change per session
-OBSTACLE_THRESH_CM  = 12                    # ultrasonic safety threshold
-```
-
-### 3.2 Run exploration
-
-Place the robot in the target environment (the rooms it will navigate in).
-
-```bash
-python explorer.py
-```
-
-The robot drives autonomously using pink-noise actions. The laptop logs:
-```
-[*] Generating 9000 pink-noise actions (beta=1.0)...
-[*] Connecting to 192.168.1.100:8888...
-[OK] Connected!
-[*] Exploring for 1800s at 5.0Hz (9000 steps)
-   Step | Action |   Dist |  Ovr |   FPS
-------------------------------------------
-     50 |    FWD |     45 |      |   4.9
-    100 |    LFT |     23 |      |   5.0
-```
-
-Press `Ctrl+C` to stop early. Data is saved automatically.
-
-### 3.3 Collect multiple sessions
-
-Run 3-5 sessions with different conditions:
-- Change `SEED` each time
-- Change `OUTPUT_DIR` to `session_02`, `session_03`, etc.
-- Vary lighting (lights on/off, curtains)
-- Start from different positions
-
-### 3.4 Merge sessions
-
-Edit `python/merge_sessions.py`:
-
-```python
-SESSION_DIRS = [
-    "./data/session_01",
-    "./data/session_02",
-    "./data/session_03",
-]
-OUTPUT_DIR = "./data/merged"
+ESP32_HOST          = "192.168.1.100"
+OUTPUT_DIR          = "./data/session_01"
+DURATION_SEC        = 1800
+RATE_HZ             = 5.0
+BETA                = 1.0
+SEED                = 42
 ```
 
 Run:
 
 ```bash
-python merge_sessions.py
+python3 explorer.py
 ```
 
-Output:
-```
-[*] Total: 142 segments, 28500 frames
-[OK] Merged dataset saved to: ./data/merged
-     Size: 195.3 MB
+The robot drives autonomously using pink-noise actions with proximity-based obstacle avoidance. The Arduino provides heading and proximity readings over UART.
+
+Run 3-5 sessions with different `SEED` and `OUTPUT_DIR` values. Vary lighting and starting position.
+
+### 4.1 Merge sessions
+
+Edit `python/merge_sessions.py` with your session paths, then:
+
+```bash
+python3 merge_sessions.py
 ```
 
 ---
 
-## Step 4: Build Offline RL Dataset (Phase 3)
+## Step 5: Build Offline RL Dataset
 
 Edit `python/hindsight_relabel.py`:
 
@@ -230,63 +212,34 @@ OUTPUT_DIR  = "./data/offline_dataset"
 NUM_RELABELS = 5
 ```
 
-Run:
-
 ```bash
-python hindsight_relabel.py
-```
-
-Output:
-```
-==================================================
-  Phase 3: Hindsight Goal Relabeling
-==================================================
-[*] Loaded 28500 frames, 142 segments
-[*] Total transitions: 142500
-[*] Saving to: ./data/offline_dataset
+python3 hindsight_relabel.py
 ```
 
 ---
 
-## Step 5: Train Teacher Model (Phase 4)
-
-**Requires GPU** (CUDA recommended). This runs on your training machine, not the ESP32.
+## Step 6: Train Teacher Model (GPU)
 
 Edit `python/train_teacher.py`:
 
 ```python
 DATASET_DIR     = "./data/offline_dataset"
 CHECKPOINT_DIR  = "./checkpoints/teacher"
-TOTAL_STEPS     = 200_000      # ~2-4 hours on a single GPU
+TOTAL_STEPS     = 200_000
 BATCH_SIZE      = 256
 ```
 
-Run:
-
 ```bash
-python train_teacher.py
+python3 train_teacher.py
 ```
 
-Output:
-```
-==================================================
-  Phase 4: Teacher Training (IQL)
-  Device: cuda
-==================================================
-[*] Teacher model: 523,456 parameters
-[*] Training for 200000 steps, batch_size=256
-
-[ 500/200000] L_total=1.2345 L_v=0.34 L_q=0.45 L_pi=0.46 | 120 steps/s
-...
-[200000/200000]  >> Eval action accuracy: 0.782
-  >> New best! Saved to best.pt
-```
+Teacher architecture: ResNet encoder (21.25M) + learned pyramid correlation (2.20M) + IQL policy/value heads (0.67M) = 24.13M total parameters.
 
 Best checkpoint saved to `checkpoints/teacher/best.pt`.
 
 ---
 
-## Step 6: Distill to Student Model (Phase 5)
+## Step 7: Distill to Student Model
 
 Edit `python/distill.py`:
 
@@ -294,24 +247,22 @@ Edit `python/distill.py`:
 DATASET_DIR     = "./data/offline_dataset"
 TEACHER_CKPT    = "./checkpoints/teacher/best.pt"
 CHECKPOINT_DIR  = "./checkpoints/student"
-TOTAL_STEPS     = 100_000      # ~30-60 min on GPU
+TOTAL_STEPS     = 100_000
 ```
-
-Run:
 
 ```bash
-python distill.py
+python3 distill.py
 ```
 
-Target: **>90% agreement** with teacher. Output:
-```
-  >> Agreement: 0.923  [FWD:0.91 LFT:0.93 RGT:0.94 STP:0.88]
-  >> New best! Saved.
-```
+Student architecture: depthwise-separable encoder (3.77M) + parameterless dot-product correlation (0) + MLP policy (0.30M) = 4.07M deployable parameters. 5.9x compression from teacher.
+
+Dual-level distillation: KL divergence on action distributions + MSE on projected correlation cues + hard label cross-entropy.
+
+Target: >90% action agreement with teacher.
 
 ---
 
-## Step 7: Quantize & Export (Phase 6)
+## Step 8: Quantize and Export
 
 Edit `python/quantize_export.py`:
 
@@ -322,175 +273,124 @@ OUTPUT_DIR      = "./export"
 QAT_STEPS       = 10_000
 ```
 
-Run:
-
 ```bash
-python quantize_export.py
+python3 quantize_export.py
 ```
 
-Output:
-```
-── Step 2: Export ONNX ──
-[OK] Encoder ONNX: ./export/encoder.onnx
-[OK] Policy ONNX: ./export/policy.onnx
-
-── Step 3: Convert to TFLite INT8 ──
-[OK] TFLite INT8: ./export/encoder.tflite (5.8 KB)
-[OK] TFLite INT8: ./export/policy.tflite (3.2 KB)
-
-── Step 4: Generate C Headers ──
-[OK] C header: ./export/esp32_headers/encoder_model.h (5832 bytes)
-[OK] C header: ./export/esp32_headers/policy_model.h (3241 bytes)
-```
+Produces INT8 TFLite models and C header arrays in `export/esp32_headers/`.
 
 ---
 
-## Step 8: Deploy to ESP32 (Phase 7)
+## Step 9: Deploy to ESP32
 
-### 8.1 Copy model headers into firmware
-
-```bash
-cp export/esp32_headers/encoder_model.h esp32/main/include/
-cp export/esp32_headers/policy_model.h  esp32/main/include/
-```
-
-### 8.2 Enable model includes in `inference.cpp`
-
-Edit `esp32/main/inference.cpp`. Uncomment the includes and delete the placeholders:
-
-```cpp
-// Uncomment these:
-#include "encoder_model.h"
-#include "policy_model.h"
-
-// Delete these placeholder lines:
-// static const uint8_t encoder_model[] = {0};
-// static const unsigned int encoder_model_len = 0;
-// static const uint8_t policy_model[] = {0};
-// static const unsigned int policy_model_len = 0;
-```
-
-### 8.3 Switch to navigation mode
-
-In `esp32/main/main.c`:
-
-```c
-static const firmware_mode_t FIRMWARE_MODE = MODE_NAVIGATE;
-```
-
-### 8.4 Build and flash
+### 9.1 Copy model headers
 
 ```bash
-cd esp32
+cp export/esp32_headers/encoder_model.h firmware/esp32/main/include/
+cp export/esp32_headers/policy_model.h  firmware/esp32/main/include/
+```
+
+### 9.2 Enable model includes
+
+Edit `firmware/esp32/main/inference.cpp`. Uncomment the real model includes and delete the placeholder arrays.
+
+### 9.3 Rebuild and flash
+
+```bash
+cd firmware/esp32
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-### 8.5 Run navigation
+The firmware detects the loaded models and enters navigation mode automatically.
 
-1. Robot boots and prints "Press GOAL button to capture target"
-2. **Carry the robot to the goal location**
-3. **Press the GOAL button** — robot captures and encodes the goal image
-4. **Carry the robot to a different starting position**
-5. The robot navigates autonomously toward the goal
+### 9.4 Navigate
 
-Monitor output:
-```
-[navigator] Goal image captured and encoded!
-[navigator] Starting navigation (max 200 steps, 5 Hz)...
-[navigator] Step   0: action=N dist=85cm logits=[45,-12,-8,-30] 27ms
-[navigator] Step  10: action=E dist=32cm logits=[-5,-10,38,-15] 26ms
-[navigator] Step  20: action=N dist=65cm logits=[50,-8,-5,-20] 28ms
-...
-[navigator] ═══════════════════════════════════
-[navigator]   Navigation complete!
-[navigator]   Steps: 47 / 200
-[navigator]   Stopped: policy STAY
-[navigator] ═══════════════════════════════════
+1. The robot boots and waits for goal capture
+2. Carry the robot to the target location and press the goal button
+3. The robot encodes the goal image and caches the features in PSRAM
+4. Carry the robot to a starting position
+5. The robot navigates autonomously at 5 Hz
+
+---
+
+## Evaluation
+
+Evaluation scripts are in `python/eval/`. Edit the config constants at the top of each file.
+
+```bash
+cd python
+
+python3 -m eval.compression_metrics
+python3 -m eval.distillation_quality
+python3 -m eval.qat_degradation
+python3 -m eval.visualize_correlation
 ```
 
 ---
 
-## Project File Reference
+## Project Structure
 
 ```
 3d-obj-detection/
-├── esp32/                              # ESP-IDF firmware
-│   ├── CMakeLists.txt
-│   ├── sdkconfig.defaults
-│   └── main/
-│       ├── include/
-│       │   ├── config.h                # ← EDIT THIS: all pin assignments
-│       │   ├── camera.h
-│       │   ├── correlation.h
-│       │   ├── image_proc.h
-│       │   ├── inference.h
-│       │   ├── motor.h
-│       │   ├── navigator.h
-│       │   ├── ultrasonic.h
-│       │   └── wifi_stream.h
-│       ├── main.c                      # ← EDIT THIS: MODE_COLLECT / MODE_NAVIGATE
-│       ├── camera.c                    # OV3660: JPEG or RGB565
-│       ├── motor.c                     # DRV8833: NORTH/SOUTH/EAST/WEST
-│       ├── ultrasonic.c                # HC-SR04: 10Hz median-filtered polling
-│       ├── image_proc.c               # 320×240 → 48×48 area-avg downscale
-│       ├── wifi_stream.c              # TCP server for laptop streaming
-│       ├── correlation.c              # INT8 9×9 cross-correlation (plain C)
-│       ├── navigator.c                # Goal-caching navigation loop
-│       ├── inference.cpp              # ← EDIT THIS: uncomment model includes
-│       ├── Kconfig.projbuild          # WiFi SSID/password
-│       └── idf_component.yml          # esp-camera + tflite-micro deps
+├── firmware/
+│   ├── esp32/                          ESP-IDF firmware
+│   │   └── main/
+│   │       ├── include/
+│   │       │   ├── config.h            Pin assignments, timing, thresholds
+│   │       │   ├── camera.h
+│   │       │   ├── motor.h
+│   │       │   ├── imu_uart.h
+│   │       │   ├── explorer.h
+│   │       │   ├── navigator.h
+│   │       │   ├── inference.h
+│   │       │   ├── image_proc.h
+│   │       │   └── wifi_stream.h
+│   │       ├── main.c                  Boot: auto-selects collection or navigation
+│   │       ├── camera.c                OV3660 JPEG capture
+│   │       ├── motor.c                 DRV8833 differential drive
+│   │       ├── imu_uart.c              Arduino UART parser (heading + proximity)
+│   │       ├── explorer.c              Pink-noise step-and-stop exploration
+│   │       ├── navigator.c             Goal-conditioned navigation loop
+│   │       ├── inference.cpp           TFLite Micro encoder + policy inference
+│   │       ├── image_proc.c            JPEG decode and resize to 96×96
+│   │       └── wifi_stream.c           TCP server for laptop data streaming
+│   └── arduino/
+│       └── imu_heading/
+│           └── imu_heading.ino         BMI270+BMM150 heading + APDS9960 proximity
 │
-└── python/                             # Training pipeline (runs on laptop/GPU)
-    ├── requirements.txt                # pip install -r requirements.txt
-    ├── receiver.py                     # Phase 1: live frame viewer
-    ├── pink_noise.py                   # Pink noise generator + visualizer
-    ├── explorer.py                     # Phase 2: autonomous exploration
-    ├── merge_sessions.py              # Phase 2: combine sessions
-    ├── hindsight_relabel.py           # Phase 3: goal relabeling → RL dataset
-    ├── dataset.py                     # PyTorch Dataset + DataLoader
-    ├── models.py                      # Teacher: ResNet-9 + correlation + IQL
-    ├── train_teacher.py               # Phase 4: IQL offline RL training
-    ├── student_model.py               # Student: ~10K param tiny model
-    ├── distill.py                     # Phase 5: teacher → student distillation
-    └── quantize_export.py             # Phase 6: QAT + TFLite + C headers
-```
-
----
-
-## Quick Command Reference
-
-```bash
-# ── Setup ──
-cd python && pip install -r requirements.txt
-cd esp32  && idf.py set-target esp32s3
-
-# ── Phase 1: Validate hardware ──
-# Edit config.h pins, set MODE_COLLECT in main.c
-idf.py build && idf.py -p /dev/ttyUSB0 flash monitor
-python receiver.py                         # live preview
-
-# ── Phase 2: Collect data ──
-python explorer.py                         # run 3-5 times, change SEED + OUTPUT_DIR
-python merge_sessions.py                   # merge all sessions
-
-# ── Phase 3: Build RL dataset ──
-python hindsight_relabel.py
-
-# ── Phase 4: Train teacher (GPU) ──
-python train_teacher.py                    # ~2-4 hours
-
-# ── Phase 5: Distill student ──
-python distill.py                          # ~30-60 min
-
-# ── Phase 6: Quantize & export ──
-python quantize_export.py
-cp export/esp32_headers/*.h esp32/main/include/
-
-# ── Phase 7: Deploy ──
-# Uncomment model includes in inference.cpp, set MODE_NAVIGATE in main.c
-idf.py build && idf.py -p /dev/ttyUSB0 flash monitor
-# Press GOAL button → robot navigates
+├── python/
+│   ├── requirements.txt
+│   ├── receiver.py                     Live frame viewer
+│   ├── pink_noise.py                   1/f noise generator (Voss-McCartney)
+│   ├── explorer.py                     Autonomous data collection client
+│   ├── merge_sessions.py               Combine multiple sessions
+│   ├── validate_session.py             Session integrity checks
+│   ├── hindsight_relabel.py            Goal relabeling → offline RL dataset
+│   ├── dataset.py                      PyTorch Dataset + DataLoader
+│   ├── models.py                       Teacher: ResNet + correlation + IQL
+│   ├── train_teacher.py                IQL offline RL training
+│   ├── student_model.py                Student: DSConv + dot-product correlation
+│   ├── distill.py                      Knowledge distillation
+│   ├── quantize_export.py              QAT + TFLite INT8 + C header export
+│   ├── run_pipeline.py                 End-to-end pipeline runner
+│   └── eval/
+│       ├── compression_metrics.py      Params, MACs, model sizes
+│       ├── distillation_quality.py     Action agreement, KL div, correlation MSE
+│       ├── qat_degradation.py          FP32 → QAT → INT8 degradation
+│       └── visualize_correlation.py    Correlation heatmaps
+│
+├── tests/
+│   └── test_server.py                  TCP server integration tests
+│
+└── report/
+    ├── main.tex
+    ├── introduction.tex
+    ├── background.tex
+    ├── method.tex
+    ├── results.tex
+    ├── discussion.tex
+    └── references.bib
 ```
 
 ---
@@ -499,10 +399,11 @@ idf.py build && idf.py -p /dev/ttyUSB0 flash monitor
 
 | Issue | Fix |
 |---|---|
-| Camera init fails (0x105) | Check PSRAM enabled in sdkconfig. Verify all 16 camera pin assignments. |
-| No WiFi connection | Check SSID/password in Kconfig. Ensure 2.4GHz network (ESP32 doesn't support 5GHz). |
-| Motor doesn't spin | Verify DRV8833 wiring (IN1-4 + ENA/ENB). Check motor power supply is separate from ESP32. |
-| Ultrasonic reads UINT16_MAX | Add voltage divider on echo pin (5V→3.3V). Check trig/echo pin assignments. |
-| TFLite arena allocation fails | Reduce `TFLITE_ARENA_SIZE` or ensure PSRAM is enabled for overflow. |
-| Low distillation agreement (<85%) | Try progressive distillation, increase student to ~20K params, or collect more data. |
-| Robot oscillates / doesn't reach goal | Tune `FORWARD_MS` and `TURN_MS` in config.h. Collect more diverse data. |
+| Camera init fails (0x105) | Check PSRAM is enabled in sdkconfig. Verify all 16 camera pin assignments in config.h. |
+| No WiFi connection | Check SSID/password. Ensure 2.4 GHz network (ESP32 does not support 5 GHz). |
+| Motor does not spin | Verify DRV8833 wiring (IN1-4 + ENA/ENB). Check motor power is separate from ESP32. |
+| Arduino data not received | Verify GND is shared between Arduino and ESP32. Check UART TX/RX pins. |
+| Proximity always 255 | Check APDS9960 initialization on Arduino Serial Monitor. Sensor may not detect objects beyond 10 cm. |
+| TFLite arena allocation fails | Reduce arena size or ensure PSRAM is enabled. |
+| Low distillation agreement (<85%) | Collect more data, increase training steps, or tune distillation loss weights. |
+| Robot oscillates near goal | Tune STEP_BURST_MS and TURN_45_MS in config.h. |

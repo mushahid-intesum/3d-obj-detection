@@ -1,20 +1,11 @@
-/**
- * @file camera.c
- * @brief OV3660 camera driver with JPEG and RGB565 modes.
- *
- * Based on: espressif/esp32-camera take_picture.c example.
- */
+
 #include "camera.h"
 #include "config.h"
 #include "esp_log.h"
 
 static const char *TAG = "camera";
 
-/**
- * @brief Internal init with selectable pixel format.
- *
- * Follows the official esp32-camera example config exactly.
- */
+
 static esp_err_t camera_init_common(pixformat_t format)
 {
     camera_config_t config = {
@@ -39,7 +30,7 @@ static esp_err_t camera_init_common(pixformat_t format)
         .ledc_timer    = LEDC_TIMER_0,
         .ledc_channel  = LEDC_CHANNEL_0,
         .pixel_format  = format,
-        .frame_size    = FRAMESIZE_QVGA,    /* 320×240 */
+        .frame_size    = FRAMESIZE_QVGA,
         .jpeg_quality  = CAM_JPEG_QUALITY,
         .fb_count      = CAM_FB_COUNT,
         .fb_location   = CAMERA_FB_IN_PSRAM,
@@ -56,7 +47,7 @@ static esp_err_t camera_init_common(pixformat_t format)
         return err;
     }
 
-    /* Sensor tuning */
+
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
         ESP_LOGI(TAG, "Sensor PID: 0x%02x", s->id.PID);

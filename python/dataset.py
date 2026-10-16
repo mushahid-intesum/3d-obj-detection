@@ -1,15 +1,3 @@
-#!/usr/bin/env python3
-"""
-dataset.py — PyTorch Dataset for offline RL image-goal navigation.
-
-Loads the index-based transition dataset produced by hindsight_relabel.py:
-  - frames.npz:      shared image bank (N, 96, 96, 3) uint8
-  - transitions.npz: obs_idx, next_obs_idx, goal_idx, actions, rewards, dones,
-                     obs_proximity, goal_proximity
-
-Serves (obs, goal, action, reward, next_obs, done, obs_proximity, goal_proximity)
-batches for IQL training.
-"""
 
 import os
 import json
@@ -18,7 +6,6 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-# ─── Constants ───
 ACTION_FORWARD    = 0
 ACTION_TURN_RIGHT = 1
 ACTION_TURN_LEFT  = 2
@@ -27,50 +14,31 @@ NUM_ACTIONS       = 4
 
 ACTION_NAMES = ["FORWARD", "TURN_RIGHT", "TURN_LEFT", "STOP"]
 
-PROX_MAX = 255.0   # normalization constant: proximity / PROX_MAX → [0, 1]
+PROX_MAX = 255.0
 
 
 class OfflineNavDataset(Dataset):
-    """
-    PyTorch Dataset for offline goal-conditioned RL navigation.
-
-    Loads pre-built transitions from hindsight_relabel.py output.
-    Each sample contains (obs, goal, action, reward, next_obs, done,
-    obs_proximity, goal_proximity).
-
-    Images are stored once in a shared frame bank and referenced by index
-    to avoid duplication. Proximity values are pre-indexed per transition.
-    """
 
     def __init__(self, dataset_dir, img_size=128, augment=True):
-        """
-        Args:
-            dataset_dir: Path to offline_dataset/ (output of hindsight_relabel.py).
-            img_size: Image size (NxN). Frames are assumed to be this size.
-            augment: Whether to apply data augmentation.
-        """
         self.img_size = img_size
         self.augment = augment
 
-        # Load shared frame bank
         frames_path = os.path.join(dataset_dir, "frames.npz")
         print(f"[Dataset] Loading frames from {frames_path}")
-        self.frames = np.load(frames_path)["frames"]  # (N, 96, 96, 3) uint8
+        self.frames = np.load(frames_path)["frames"]
 
-        # Load transitions (indices + labels)
         trans_path = os.path.join(dataset_dir, "transitions.npz")
         print(f"[Dataset] Loading transitions from {trans_path}")
         trans = np.load(trans_path)
-        self.obs_idx      = trans["obs_idx"]       # (M,) int32
-        self.next_obs_idx = trans["next_obs_idx"]  # (M,) int32
-        self.goal_idx     = trans["goal_idx"]      # (M,) int32
-        self.actions      = trans["actions"]       # (M,) int32
-        self.rewards      = trans["rewards"]       # (M,) float32
-        self.dones        = trans["dones"]         # (M,) bool
-        self.obs_proximity    = trans["obs_proximity"]     # (M,) float32, raw [0-255]
-        self.goal_proximity   = trans["goal_proximity"]    # (M,) float32, raw [0-255]
+        self.obs_idx      = trans["obs_idx"]
+        self.next_obs_idx = trans["next_obs_idx"]
+        self.goal_idx     = trans["goal_idx"]
+        self.actions      = trans["actions"]
+        self.rewards      = trans["rewards"]
+        self.dones        = trans["dones"]
+        self.obs_proximity    = trans["obs_proximity"]
+        self.goal_proximity   = trans["goal_proximity"]
 
-        # Load dataset info
         info_path = os.path.join(dataset_dir, "dataset_info.json")
         if os.path.exists(info_path):
             with open(info_path) as f:
@@ -89,18 +57,15 @@ class OfflineNavDataset(Dataset):
         return len(self.obs_idx)
 
     def _frame_to_tensor(self, idx):
-        """Load frame by index and convert to (3, H, W) float32 tensor."""
-        img = self.frames[idx]  # (96, 96, 3) uint8
+        img = self.frames[idx]
         arr = img.astype(np.float32) / 255.0
-        return torch.from_numpy(arr).permute(2, 0, 1)  # (3, H, W)
+        return torch.from_numpy(arr).permute(2, 0, 1)
 
     def _augment(self, obs, goal, next_obs, action):
-        """Consistent augmentation: horizontal flip swaps left/right."""
         if np.random.random() < 0.5:
             obs = obs.flip(-1)
             goal = goal.flip(-1)
             next_obs = next_obs.flip(-1)
-            # Swap TURN_RIGHT ↔ TURN_LEFT
             if action == ACTION_TURN_RIGHT:
                 action = ACTION_TURN_LEFT
             elif action == ACTION_TURN_LEFT:
@@ -115,7 +80,6 @@ class OfflineNavDataset(Dataset):
         reward   = float(self.rewards[idx])
         done     = float(self.dones[idx])
 
-        # Normalize proximity: [0, 200] → [0, 1], clamped
         obs_proximity  = min(float(self.obs_proximity[idx])  / PROX_MAX, 1.0)
         goal_proximity = min(float(self.goal_proximity[idx]) / PROX_MAX, 1.0)
 
@@ -125,23 +89,18 @@ class OfflineNavDataset(Dataset):
             )
 
         return {
-            "obs":        obs,                                          # (3, 96, 96)
-            "goal":       goal,                                         # (3, 96, 96)
-            "next_obs":   next_obs,                                     # (3, 96, 96)
-            "action":     torch.tensor(action, dtype=torch.long),       # scalar
-            "reward":     torch.tensor(reward, dtype=torch.float32),    # scalar
-            "done":       torch.tensor(done, dtype=torch.float32),      # scalar
-            "obs_proximity":  torch.tensor(obs_proximity, dtype=torch.float32), # scalar [0,1]
-            "goal_proximity": torch.tensor(goal_proximity, dtype=torch.float32),# scalar [0,1]
+            "obs":        obs,
+            "goal":       goal,
+            "next_obs":   next_obs,
+            "action":     torch.tensor(action, dtype=torch.long),
+            "reward":     torch.tensor(reward, dtype=torch.float32),
+            "done":       torch.tensor(done, dtype=torch.float32),
+            "obs_proximity":  torch.tensor(obs_proximity, dtype=torch.float32),
+            "goal_proximity": torch.tensor(goal_proximity, dtype=torch.float32),
         }
 
 
 def get_dataloader(dataset_dir, batch_size=256, augment=True, num_workers=4):
-    """Create DataLoader for offline RL training.
-
-    Args:
-        dataset_dir: Path to offline_dataset/ directory.
-    """
     ds = OfflineNavDataset(dataset_dir, augment=augment)
     return DataLoader(
         ds,
@@ -154,7 +113,6 @@ def get_dataloader(dataset_dir, batch_size=256, augment=True, num_workers=4):
 
 
 if __name__ == "__main__":
-    # Quick test
     DATASET_DIR = "./data/offline_dataset"
 
     ds = OfflineNavDataset(DATASET_DIR, augment=False)

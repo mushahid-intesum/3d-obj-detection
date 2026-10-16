@@ -1,28 +1,3 @@
-#!/usr/bin/env python3
-"""
-test_server.py — Integration test server for dual-ESP32 navigation system.
-
-Runs on the laptop. Both ESP32 boards connect to this server.
-Orchestrates 6 sequential tests and reports PASS/FAIL for each.
-
-Tests:
-  T1: Both boards connect and send HELLO → server replies OK
-  T2: Camera board sends a real JPEG frame → server validates IMG4 packet
-  T3: Motor board receives dummy SPI data from camera, sends OK to server
-  T4: Motor board reads IMU heading from Arduino, sends it to server
-  T5: Camera captures image + gets IMU from motor via SPI, sends both to server
-  T6: Motor board rotates motors (FWD, LEFT, RIGHT) and confirms via server
-
-Protocol (test channel):
-  Each message: [4B magic "TST\x01"] [2B payload_len LE] [payload bytes]
-  Payload is UTF-8 JSON.
-
-Usage:
-  1. Flash cam_board with TEST_MODE=1 and motor_board with TEST_MODE=1
-  2. Run: python test_server.py
-  3. Power on both boards — they connect via WiFi
-  4. Tests run automatically in sequence
-"""
 
 import socket
 import struct
@@ -32,17 +7,11 @@ import sys
 import threading
 from datetime import datetime
 
-# ═══════════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════════
 SERVER_PORT     = 8888
-TIMEOUT_S       = 30          # per-test timeout
-IMG4_MAGIC      = 0x494D4734  # "IMG4"
+TIMEOUT_S       = 30
+IMG4_MAGIC      = 0x494D4734
 TEST_MAGIC      = b"TST\x01"
 
-# ═══════════════════════════════════════════════
-#  Color helpers
-# ═══════════════════════════════════════════════
 GREEN  = "\033[92m"
 RED    = "\033[91m"
 YELLOW = "\033[93m"
@@ -55,12 +24,8 @@ def FAIL(name, reason=""): print(f"  {RED}{BOLD}[FAIL]{RESET} {name}" + (f" — 
 def INFO(msg):   print(f"  {CYAN}[INFO]{RESET} {msg}")
 def WARN(msg):   print(f"  {YELLOW}[WARN]{RESET} {msg}")
 
-# ═══════════════════════════════════════════════
-#  Protocol helpers
-# ═══════════════════════════════════════════════
 
 def recv_exact(sock, n, timeout=TIMEOUT_S):
-    """Receive exactly n bytes with timeout."""
     buf = bytearray()
     while len(buf) < n:
         chunk = sock.recv(n - len(buf))
@@ -71,7 +36,6 @@ def recv_exact(sock, n, timeout=TIMEOUT_S):
 
 
 def recv_test_msg(sock, timeout=TIMEOUT_S):
-    """Receive one test protocol message. Returns parsed JSON dict."""
     header = recv_exact(sock, 6, timeout)
     magic = header[:4]
     if magic != TEST_MAGIC:
@@ -82,14 +46,12 @@ def recv_test_msg(sock, timeout=TIMEOUT_S):
 
 
 def send_test_msg(sock, data: dict):
-    """Send one test protocol message."""
     payload = json.dumps(data).encode("utf-8")
     header = TEST_MAGIC + struct.pack("<H", len(payload))
     sock.sendall(header + payload)
 
 
 def recv_img4_packet(sock, timeout=TIMEOUT_S):
-    """Receive one IMG4 protocol packet. Returns (header_dict, jpeg_bytes)."""
     sock.settimeout(timeout)
     raw_header = recv_exact(sock, 22, timeout)
     (magic, frame_id, timestep, action_taken,
@@ -110,10 +72,6 @@ def recv_img4_packet(sock, timeout=TIMEOUT_S):
     }, jpeg_data
 
 
-# ═══════════════════════════════════════════════
-#  Test Server
-# ═══════════════════════════════════════════════
-
 class TestServer:
     def __init__(self, port=SERVER_PORT):
         self.port = port
@@ -123,9 +81,7 @@ class TestServer:
 
     @staticmethod
     def _get_local_ip():
-        """Get this machine's local IP on the WiFi network."""
         try:
-            # UDP connect trick — doesn't send any data, just resolves local IP
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
@@ -135,8 +91,6 @@ class TestServer:
             return socket.gethostbyname(socket.gethostname())
 
     def start(self):
-        """Main entry: wait for connections, run tests."""
-        # Detect local IP
         local_ip = self._get_local_ip()
 
         print(f"\n{BOLD}{'═' * 60}{RESET}")
@@ -166,9 +120,8 @@ class TestServer:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind(("0.0.0.0", self.port))
         srv.listen(2)
-        srv.settimeout(120)  # 2 minutes to wait for both boards
+        srv.settimeout(120)
 
-        # ── Wait for both boards to connect ──
         print(f"  Waiting for Camera Board and Motor Board to connect...")
         print(f"  (timeout: 120s)\n")
 
@@ -178,7 +131,6 @@ class TestServer:
                 client, addr = srv.accept()
                 INFO(f"Connection from {addr[0]}:{addr[1]}")
 
-                # Each board sends a HELLO identifying itself
                 try:
                     msg = recv_test_msg(client, timeout=10)
                     board_id = msg.get("board", "unknown")
@@ -206,7 +158,6 @@ class TestServer:
 
         print()
 
-        # ── Run tests sequentially ──
         tests = [
             ("T1: Board Connectivity",              self.test_1_connectivity),
             ("T2: Camera Image Streaming",           self.test_2_camera_image),
@@ -225,7 +176,6 @@ class TestServer:
                 FAIL(name, str(e))
                 self.results[name] = False
 
-        # ── Summary ──
         print(f"\n{BOLD}{'═' * 60}{RESET}")
         print(f"{BOLD}  Test Results Summary{RESET}")
         print(f"{'═' * 60}")
@@ -239,14 +189,12 @@ class TestServer:
         print(f"    {color}{BOLD}{passed}/{total} tests passed{RESET}")
         print(f"{'═' * 60}\n")
 
-        # Cleanup
         self._send_both({"cmd": "done"})
         self.cam_sock.close()
         self.mot_sock.close()
         srv.close()
 
     def _send_both(self, data):
-        """Send a test message to both boards."""
         try:
             send_test_msg(self.cam_sock, data)
         except:
@@ -256,17 +204,12 @@ class TestServer:
         except:
             pass
 
-    # ─────────────────────────────────────────
-    #  T1: Both boards connected, server says OK
-    # ─────────────────────────────────────────
     def test_1_connectivity(self):
         name = "T1: Board Connectivity"
         try:
-            # Send OK to both boards
             send_test_msg(self.cam_sock, {"cmd": "t1_ok", "msg": "Camera Board connected"})
             send_test_msg(self.mot_sock, {"cmd": "t1_ok", "msg": "Motor Board connected"})
 
-            # Wait for ACK from both
             cam_ack = recv_test_msg(self.cam_sock, timeout=10)
             mot_ack = recv_test_msg(self.mot_sock, timeout=10)
 
@@ -280,20 +223,14 @@ class TestServer:
             FAIL(name, str(e))
             self.results[name] = False
 
-    # ─────────────────────────────────────────
-    #  T2: Camera sends real JPEG via IMG4
-    # ─────────────────────────────────────────
     def test_2_camera_image(self):
         name = "T2: Camera Image Streaming"
         try:
-            # Tell camera board to capture and send one frame
             send_test_msg(self.cam_sock, {"cmd": "t2_capture"})
 
-            # Receive IMG4 packet
             hdr, jpeg = recv_img4_packet(self.cam_sock, timeout=15)
 
             checks = []
-            # Check JPEG starts with FFD8 (SOI marker)
             if len(jpeg) >= 2 and jpeg[0] == 0xFF and jpeg[1] == 0xD8:
                 checks.append("jpeg_valid")
             else:
@@ -301,13 +238,11 @@ class TestServer:
                 self.results[name] = False
                 return
 
-            # Check reasonable JPEG size (1KB - 100KB)
             if 1024 <= len(jpeg) <= 102400:
                 checks.append("jpeg_size_ok")
             else:
                 WARN(f"  Unusual JPEG size: {len(jpeg)} bytes")
 
-            # Check header fields
             if 0 <= hdr["action"] <= 3:
                 checks.append("action_valid")
             if 0.0 <= hdr["heading"] < 360.0 or hdr["heading"] == 0.0:
@@ -316,7 +251,6 @@ class TestServer:
             INFO(f"  JPEG: {len(jpeg)} bytes, action={hdr['action']}, heading={hdr['heading']:.1f}°")
             INFO(f"  Checks passed: {', '.join(checks)}")
 
-            # Send ACK
             send_test_msg(self.cam_sock, {"cmd": "t2_ack", "status": "ok"})
 
             PASS(name)
@@ -326,19 +260,13 @@ class TestServer:
             FAIL(name, str(e))
             self.results[name] = False
 
-    # ─────────────────────────────────────────
-    #  T3: Motor receives dummy SPI data from camera
-    # ─────────────────────────────────────────
     def test_3_motor_spi_dummy(self):
         name = "T3: Motor SPI Receive (dummy data)"
         try:
-            # Tell motor to listen for SPI FIRST (so slave is ready)
             send_test_msg(self.mot_sock, {"cmd": "t3_spi_recv"})
-            time.sleep(0.5)  # Let motor set up SPI slave
-            # Then tell camera to send a dummy SPI exchange
+            time.sleep(0.5)
             send_test_msg(self.cam_sock, {"cmd": "t3_spi_send"})
 
-            # Wait for motor board to report SPI reception
             mot_result = recv_test_msg(self.mot_sock, timeout=15)
 
             if mot_result.get("status") == "ok":
@@ -346,12 +274,10 @@ class TestServer:
                 msg_type = mot_result.get("msg_type", -1)
                 INFO(f"  Motor received SPI: obstacle={obs}, msg_type={msg_type}")
 
-                # Motor sends OK confirmation
                 if obs == 0 and msg_type == 0:
                     PASS(name)
                     self.results[name] = True
                 else:
-                    # Still pass if we got any valid SPI data
                     WARN(f"  Unexpected values but SPI worked")
                     PASS(name)
                     self.results[name] = True
@@ -363,9 +289,6 @@ class TestServer:
             FAIL(name, str(e))
             self.results[name] = False
 
-    # ─────────────────────────────────────────
-    #  T4: Motor reads IMU heading from Arduino
-    # ─────────────────────────────────────────
     def test_4_motor_imu(self):
         name = "T4: Motor IMU Heading"
         try:
@@ -397,29 +320,20 @@ class TestServer:
             FAIL(name, str(e))
             self.results[name] = False
 
-    # ─────────────────────────────────────────
-    #  T5: Camera gets IMU from motor via SPI,
-    #      sends camera + IMU data to server
-    # ─────────────────────────────────────────
     def test_5_full_pipeline(self):
         name = "T5: Full Pipeline (Camera+IMU→Server)"
         try:
-            # Tell motor to prepare SPI response with current heading
             send_test_msg(self.mot_sock, {"cmd": "t5_spi_respond"})
-            time.sleep(0.5)  # Let motor set up SPI slave
-            # Tell camera to do a full cycle: capture + SPI exchange + send IMG4
+            time.sleep(0.5)
             send_test_msg(self.cam_sock, {"cmd": "t5_full_cycle"})
 
-            # Receive IMG4 packet from camera
             hdr, jpeg = recv_img4_packet(self.cam_sock, timeout=20)
 
             checks = []
 
-            # Validate JPEG
             if len(jpeg) >= 2 and jpeg[0] == 0xFF and jpeg[1] == 0xD8:
                 checks.append("jpeg_valid")
 
-            # Heading should be a real value from IMU (not 0.0 placeholder)
             heading = hdr["heading"]
             action = hdr["action"]
 
@@ -431,7 +345,6 @@ class TestServer:
             if len(checks) > 0:
                 checks.append("pipeline_complete")
 
-            # Also receive OK from camera's test channel
             cam_ack = recv_test_msg(self.cam_sock, timeout=10)
 
             if cam_ack.get("status") == "ok" and "jpeg_valid" in checks:
@@ -445,9 +358,6 @@ class TestServer:
             FAIL(name, str(e))
             self.results[name] = False
 
-    # ─────────────────────────────────────────
-    #  T6: Motor properly rotates motors
-    # ─────────────────────────────────────────
     def test_6_motor_rotation(self):
         name = "T6: Motor Rotation"
         try:
@@ -475,7 +385,6 @@ class TestServer:
                     WARN(f"  {act_info['name']}: FAILED — {result}")
                     all_ok = False
 
-                # Brief pause between motor commands
                 time.sleep(0.5)
 
             if all_ok:
@@ -489,10 +398,6 @@ class TestServer:
             FAIL(name, str(e))
             self.results[name] = False
 
-
-# ═══════════════════════════════════════════════
-#  Main
-# ═══════════════════════════════════════════════
 
 if __name__ == "__main__":
     server = TestServer()

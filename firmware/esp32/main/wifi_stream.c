@@ -1,7 +1,4 @@
-/**
- * @file wifi_stream.c
- * @brief WiFi STA mode and TCP server — IMG5 protocol for free exploration.
- */
+
 #include "wifi_stream.h"
 #include "config.h"
 #include "esp_wifi.h"
@@ -60,7 +57,7 @@ esp_err_t wifi_init_sta(void)
 {
     s_wifi_event_group = xEventGroupCreate();
 
-    /* These must be called before esp_netif_create_default_wifi_sta() */
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -93,7 +90,7 @@ esp_err_t wifi_init_sta(void)
         pdMS_TO_TICKS(30000));
 
     if (bits & WIFI_CONNECTED_BIT) {
-        /* Disable power saving — keep radio awake for stable streaming */
+
         esp_wifi_set_ps(WIFI_PS_NONE);
         ESP_LOGI(TAG, "WiFi power save disabled for streaming");
         return ESP_OK;
@@ -135,12 +132,7 @@ esp_err_t stream_server_start(uint16_t port)
     return ESP_OK;
 }
 
-/**
- * @brief Background task that accepts TCP clients.
- *
- * Runs in a loop: wait for client → serve until disconnect → wait again.
- * The collection/navigation loop is NOT blocked by this.
- */
+
 static void stream_accept_task(void *pvParam)
 {
     while (1) {
@@ -156,20 +148,19 @@ static void stream_accept_task(void *pvParam)
             continue;
         }
 
-        /* Configure socket for reliability */
-        /* Send timeout — prevents send() from blocking forever */
+
         struct timeval snd_tv = { .tv_sec = 5, .tv_usec = 0 };
         setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &snd_tv, sizeof(snd_tv));
 
-        /* TCP_NODELAY — disable Nagle, send packets immediately */
+
         int flag = 1;
         setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
-        /* TCP keepalive — detect dead connections in ~25s */
+
         setsockopt(client, SOL_SOCKET, SO_KEEPALIVE, &flag, sizeof(flag));
-        int idle = 10;   /* start probes after 10s idle */
-        int intvl = 5;   /* probe every 5s */
-        int cnt = 3;     /* 3 failed probes = dead */
+        int idle = 10;
+        int intvl = 5;
+        int cnt = 3;
         setsockopt(client, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
         setsockopt(client, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
         setsockopt(client, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
@@ -177,7 +168,7 @@ static void stream_accept_task(void *pvParam)
         s_client_sock = client;
         ESP_LOGI(TAG, "Client connected! (snd_timeout=5s, keepalive=10/5/3)");
 
-        /* Wait until client disconnects (s_client_sock set to -1 by send_all) */
+
         while (s_client_sock >= 0) {
             vTaskDelay(pdMS_TO_TICKS(500));
         }
@@ -218,18 +209,7 @@ esp_err_t stream_send_frame(uint32_t frame_id, uint32_t timestep,
 {
     if (s_client_sock < 0) return ESP_FAIL;
 
-    /*
-     * IMG5 packet layout (26-byte header):
-     *   [0..3]   magic          0x494D4735 ("IMG5")
-     *   [4..7]   frame_id       uint32 LE
-     *   [8..11]  timestep       uint32 LE
-     *   [12]     action_taken   uint8
-     *   [13]     prox_blocked   uint8
-     *   [14..17] proximity      float32 LE
-     *   [18..21] heading_deg    float32 LE
-     *   [22..25] jpeg_len       uint32 LE
-     *   [26..N]  jpeg_data
-     */
+
     uint8_t header[STREAM_HEADER_SIZE];
     uint32_t magic = STREAM_MAGIC;
     memcpy(&header[0],  &magic, 4);
@@ -249,4 +229,3 @@ bool stream_is_connected(void)
 {
     return (s_client_sock >= 0);
 }
-

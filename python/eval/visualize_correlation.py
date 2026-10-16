@@ -1,15 +1,3 @@
-#!/usr/bin/env python3
-"""
-visualize_correlation.py — Tier 5: Correlation cue visualizations.
-
-Generates heatmap figures showing:
-  1. Student 16×16 correlation matrix for a (obs, goal) pair
-  2. Side-by-side comparison of teacher vs student cue vectors
-  3. Left/right directional scores
-
-Usage:
-    python3 -m eval.visualize_correlation
-"""
 
 import os
 import sys
@@ -24,28 +12,21 @@ from models import TeacherModel
 from student_model import StudentModel, CORR_POOL_SIZE
 
 
-# ═══════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════
 DEVICE              = "cuda" if torch.cuda.is_available() else "cpu"
 NUM_ACTIONS         = 4
 ACTION_NAMES        = ["FWD", "RIGHT", "LEFT", "STOP"]
 
-# Checkpoint paths (set to None to use random weights)
-TEACHER_CKPT        = None   # "./checkpoints/teacher/best.pt"
-STUDENT_CKPT        = None   # "./checkpoints/student/best.pt"
+TEACHER_CKPT        = None
+STUDENT_CKPT        = None
 
-# Image paths (set to None to use synthetic data)
-OBS_IMAGE           = None   # "./data/obs.jpg"
-GOAL_IMAGE          = None   # "./data/goal.jpg"
+OBS_IMAGE           = None
+GOAL_IMAGE          = None
 
-PROXIMITY           = 1.0    # 0 = close, 1 = far
+PROXIMITY           = 1.0
 OUTPUT_DIR          = "./figures"
-# ═══════════════════════════════════════════
 
 
 def load_image(path, size=96):
-    """Load and preprocess a single image."""
     from PIL import Image
     import torchvision.transforms as T
 
@@ -61,14 +42,6 @@ def load_image(path, size=96):
 
 @torch.no_grad()
 def extract_correlation_details(student, obs, goal):
-    """Extract intermediate correlation details from student.
-
-    Returns:
-        corr_matrix: (16, 16) raw dot-product correlation matrix
-        left_score: scalar left directional similarity
-        right_score: scalar right directional similarity
-        corr_cue: (258,) full correlation cue vector
-    """
     f_obs = student.encoder(obs.to(DEVICE))
     f_goal = student.encoder(goal.to(DEVICE))
 
@@ -105,13 +78,11 @@ def extract_correlation_details(student, obs, goal):
 
 @torch.no_grad()
 def extract_teacher_cue(teacher, obs, goal):
-    """Extract teacher correlation cue."""
     cue = teacher.encode_and_correlate(obs.to(DEVICE), goal.to(DEVICE))
     return cue[0].cpu().numpy()
 
 
 def plot_correlation(details, teacher_cue=None, action_label=None):
-    """Generate correlation visualization figures."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -122,7 +93,6 @@ def plot_correlation(details, teacher_cue=None, action_label=None):
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Figure 1: Correlation matrix + cue + L/R scores
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
 
     im = axes[0].imshow(details["corr_matrix"], cmap="RdBu_r",
@@ -156,7 +126,6 @@ def plot_correlation(details, teacher_cue=None, action_label=None):
     print(f"[*] Saved: {path}")
     plt.close()
 
-    # Figure 2: Teacher vs Student cue comparison
     if teacher_cue is not None:
         fig, axes = plt.subplots(2, 1, figsize=(12, 5))
 
@@ -178,12 +147,7 @@ def plot_correlation(details, teacher_cue=None, action_label=None):
         plt.close()
 
 
-# ═══════════════════════════════════════════
-#  Main
-# ═══════════════════════════════════════════
-
 if __name__ == "__main__":
-    # Load student
     student = StudentModel(num_actions=NUM_ACTIONS).to(DEVICE)
     if STUDENT_CKPT and os.path.exists(STUDENT_CKPT):
         ckpt = torch.load(STUDENT_CKPT, map_location=DEVICE, weights_only=False)
@@ -193,7 +157,6 @@ if __name__ == "__main__":
         print("[!] No student checkpoint, using random weights")
     student.eval()
 
-    # Load teacher (optional)
     teacher = None
     teacher_cue = None
     if TEACHER_CKPT and os.path.exists(TEACHER_CKPT):
@@ -204,7 +167,6 @@ if __name__ == "__main__":
         teacher.eval()
         print(f"[*] Teacher loaded from {TEACHER_CKPT}")
 
-    # Load images
     if OBS_IMAGE and GOAL_IMAGE:
         obs = load_image(OBS_IMAGE)
         goal = load_image(GOAL_IMAGE)
@@ -213,12 +175,10 @@ if __name__ == "__main__":
         obs = torch.randn(1, 3, 96, 96)
         goal = torch.randn(1, 3, 96, 96)
 
-    # Extract correlation details
     details = extract_correlation_details(student, obs, goal)
     if teacher is not None:
         teacher_cue = extract_teacher_cue(teacher, obs, goal)
 
-    # Get predicted action
     prox = torch.tensor([PROXIMITY])
     with torch.no_grad():
         logits = student(obs.to(DEVICE), goal.to(DEVICE), prox.to(DEVICE))

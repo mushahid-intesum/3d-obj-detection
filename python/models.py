@@ -1,24 +1,10 @@
-#!/usr/bin/env python3
-"""
-models.py — Teacher model for ImageNav with proximity input.
-
-Components:
-  - SharedEncoder:       ResNet producing 12×12 feature maps
-  - CorrelationModule:   RSRNav-style cross-correlation
-  - PolicyNetwork:       Correlation cue + proximity → action logits
-  - QNetwork / VNetwork: IQL value heads (cue + proximity aware)
-  - TeacherModel:        Full pipeline: encoder → correlation → action
-"""
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ─── Residual Block ───
-
 class ResBlock(nn.Module):
-    """Standard residual block with two 3×3 convolutions."""
 
     def __init__(self, channels):
         super().__init__()
@@ -34,18 +20,7 @@ class ResBlock(nn.Module):
         return F.relu(out + residual)
 
 
-# ─── Shared Encoder ───
-
 class SharedEncoder(nn.Module):
-    """
-    Weight-shared ResNet encoder for both goal and observation images.
-
-    Input:  (B, 3, 96, 96) RGB image
-    Output: (B, feat_dim, 12, 12) feature map
-
-    Configurable stage widths and block depths.
-    Default: [128, 256, 512] × [3, 4, 3] → ~21M params.
-    """
 
     def __init__(self, feat_dim=512, stage_channels=None, stage_blocks=None):
         super().__init__()
@@ -70,17 +45,10 @@ class SharedEncoder(nn.Module):
         self.feat_dim = stage_channels[-1]
 
     def forward(self, x):
-        return self.net(x)  # (B, feat_dim, 12, 12)
+        return self.net(x)
 
-
-# ─── Correlation Module ───
 
 class CorrelationModule(nn.Module):
-    """
-    RSRNav-style direction-aware correlation.
-
-    Takes two feature maps (goal, obs) and produces a correlation cue vector.
-    """
 
     def __init__(self, feat_h=12, feat_w=12, feat_dim=512, pyramid_levels=2,
                  lookup_radius=1, cue_dim=512):
@@ -92,7 +60,7 @@ class CorrelationModule(nn.Module):
         self.pyramid_levels = pyramid_levels
 
         lookup_ch = (pyramid_levels + 1) * (self.k ** 2)
-        pool_size = 8  # pool fused correlation maps to 8×8
+        pool_size = 8
         self.fusion = nn.Sequential(
             nn.Conv2d(lookup_ch, 128, 3, padding=1, bias=False),
             nn.BatchNorm2d(128), nn.ReLU(inplace=True),
@@ -101,7 +69,7 @@ class CorrelationModule(nn.Module):
             nn.AdaptiveAvgPool2d(pool_size),
         )
 
-        fused_size = 64 * pool_size * pool_size  # 64 * 8 * 8 = 4096
+        fused_size = 64 * pool_size * pool_size
         self.fc = nn.Sequential(
             nn.Linear(fused_size, cue_dim),
             nn.ReLU(inplace=True),
@@ -167,14 +135,7 @@ class CorrelationModule(nn.Module):
         return self.fc(x)
 
 
-# ─── Policy Head ───
-
 class PolicyNetwork(nn.Module):
-    """Maps correlation cue + proximity → action logits.
-
-    Proximity is concatenated as a normalized scalar [0, 1] to the cue vector
-    before the MLP, adding one extra input dimension.
-    """
 
     def __init__(self, cue_dim=512, hidden=256, num_actions=4):
         super().__init__()
@@ -185,24 +146,11 @@ class PolicyNetwork(nn.Module):
         )
 
     def forward(self, cue, obs_proximity):
-        """Args:
-            cue:       (B, cue_dim) correlation cue
-            obs_proximity: (B,) normalized proximity distance [0, 1]
-        Returns:
-            (B, num_actions) action logits
-        """
         x = torch.cat([cue, obs_proximity.unsqueeze(-1)], dim=-1)
         return self.net(x)
 
 
-# ─── Q-Network (IQL) ───
-
 class QNetwork(nn.Module):
-    """State-action Q-value estimator for IQL.
-
-    Takes correlation cue, proximity scalar, and discrete action index,
-    returns scalar Q-value.
-    """
 
     def __init__(self, cue_dim=512, hidden=256, num_actions=4):
         super().__init__()
@@ -214,26 +162,13 @@ class QNetwork(nn.Module):
         )
 
     def forward(self, cue, obs_proximity, actions):
-        """Args:
-            cue:       (B, cue_dim) correlation cue
-            obs_proximity: (B,) normalized proximity distance [0, 1]
-            actions:   (B,) int64 action indices
-        Returns:
-            (B,) scalar Q-values
-        """
-        a_emb = self.action_embed(actions)                # (B, 32)
+        a_emb = self.action_embed(actions)
         x = torch.cat([cue, obs_proximity.unsqueeze(-1),
-                        a_emb], dim=-1)                    # (B, cue_dim+1+32)
-        return self.net(x).squeeze(-1)                     # (B,)
+                        a_emb], dim=-1)
+        return self.net(x).squeeze(-1)
 
-
-# ─── V-Network (IQL) ───
 
 class VNetwork(nn.Module):
-    """State value estimator for IQL.
-
-    Takes correlation cue + proximity, returns scalar V-value.
-    """
 
     def __init__(self, cue_dim=512, hidden=256):
         super().__init__()
@@ -244,28 +179,11 @@ class VNetwork(nn.Module):
         )
 
     def forward(self, cue, obs_proximity):
-        """Args:
-            cue:       (B, cue_dim) correlation cue
-            obs_proximity: (B,) normalized proximity distance [0, 1]
-        Returns:
-            (B,) scalar V-values
-        """
         x = torch.cat([cue, obs_proximity.unsqueeze(-1)], dim=-1)
         return self.net(x).squeeze(-1)
 
 
-# ─── Full Teacher Model ───
-
 class TeacherModel(nn.Module):
-    """
-    Teacher model for image-goal navigation with proximity input.
-
-    Architecture:
-      obs  → Encoder → f_obs ─┬→ Correlation(f_goal, f_obs) → cue ──┐
-      goal → Encoder → f_goal ┘                                      │
-      proximity (normalized) ─────────────────────────────────────→ cat → Policy → actions
-                                                                       → Q1, Q2, V (IQL)
-    """
 
     def __init__(self, feat_dim=512, cue_dim=512, num_actions=4):
         super().__init__()
@@ -276,33 +194,16 @@ class TeacherModel(nn.Module):
         )
         self.policy = PolicyNetwork(cue_dim, num_actions=num_actions)
 
-        # IQL value networks
         self.q1 = QNetwork(cue_dim, num_actions=num_actions)
         self.q2 = QNetwork(cue_dim, num_actions=num_actions)
         self.v = VNetwork(cue_dim)
 
     def encode_and_correlate(self, obs, goal):
-        """Encode obs/goal and compute correlation cue (no policy head).
-
-        Used by IQL trainer which feeds the cue to Q/V/Policy separately.
-
-        Returns:
-            cue: (B, cue_dim) correlation cue
-        """
         f_obs = self.encoder(obs)
         f_goal = self.encoder(goal)
         return self.correlation(f_goal, f_obs)
 
     def forward(self, obs, goal, obs_proximity):
-        """
-        Args:
-            obs:       (B, 3, 96, 96) current observation
-            goal:      (B, 3, 96, 96) goal image
-            obs_proximity: (B,) normalized proximity distance [0, 1]
-
-        Returns:
-            action_logits: (B, num_actions)
-        """
         f_obs = self.encoder(obs)
         f_goal = self.encoder(goal)
 
@@ -312,13 +213,11 @@ class TeacherModel(nn.Module):
         return action_logits
 
     def get_action(self, obs, goal, obs_proximity):
-        """Get action for inference."""
         with torch.no_grad():
             logits = self.forward(obs, goal, obs_proximity)
             return logits.argmax(dim=-1)
 
     def count_params(self):
-        """Count parameters by component."""
         counts = {}
         counts["encoder"] = sum(p.numel() for p in self.encoder.parameters())
         counts["correlation"] = sum(

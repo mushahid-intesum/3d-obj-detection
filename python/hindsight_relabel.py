@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""
-hindsight_relabel.py — Phase 3: Build offline RL dataset via hindsight goal relabeling.
-
-Takes the merged exploration dataset (from merge_sessions.py) and produces
-a goal-conditioned offline RL dataset by retroactively assigning goals
-from future timesteps in each trajectory segment.
-
-Each training sample:  (obs, goal, action, reward, next_obs, done, obs_proximity, goal_proximity)
-"""
 
 import os
 import json
@@ -15,27 +5,22 @@ import time
 
 import numpy as np
 
-# ═══════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════
-MERGED_DIR          = "./data/merged"           # output of merge_sessions.py
-OUTPUT_DIR          = "./data/offline_dataset"   # where to save the RL dataset
-NUM_RELABELS        = 5         # number of future goals sampled per timestep
-MAX_HORIZON         = 50        # max future steps to sample goals from
-TERMINAL_THRESHOLD  = 3         # steps within this horizon count as near-goal
-TERMINAL_REWARD     = 5.0       # reward for reaching the goal
-STEP_PENALTY        = -0.01     # per-step penalty to encourage efficiency
+MERGED_DIR          = "./data/merged"
+OUTPUT_DIR          = "./data/offline_dataset"
+NUM_RELABELS        = 5
+MAX_HORIZON         = 50
+TERMINAL_THRESHOLD  = 3
+TERMINAL_REWARD     = 5.0
+STEP_PENALTY        = -0.01
 SEED                = 42
-# ═══════════════════════════════════════════
 
 
 def load_merged_dataset(merged_dir):
-    """Load the merged dataset and segment index."""
     data = np.load(os.path.join(merged_dir, "dataset.npz"))
-    frames = data["frames"]       # (N, 96, 96, 3) uint8
-    actions = data["actions"]     # (N,) int32
-    headings = data["headings"]   # (N,) float32
-    proximity = data["proximity"]   # (N,) float32
+    frames = data["frames"]
+    actions = data["actions"]
+    headings = data["headings"]
+    proximity = data["proximity"]
 
     with open(os.path.join(merged_dir, "segments.json"), "r") as f:
         segments = json.load(f)
@@ -47,17 +32,6 @@ def load_merged_dataset(merged_dir):
 
 
 def relabel_segment(frames, actions, seg_start, seg_end, rng):
-    """
-    Apply hindsight goal relabeling to one trajectory segment.
-
-    For each timestep t in [seg_start, seg_end-1]:
-      - Sample NUM_RELABELS future timesteps k from [1, min(MAX_HORIZON, remaining)]
-      - The frame at t+k becomes the "goal image"
-      - The action at t is the action taken
-      - Reward: +TERMINAL_REWARD if k <= TERMINAL_THRESHOLD, else STEP_PENALTY
-
-    Returns list of transition dicts.
-    """
     transitions = []
     seg_len = seg_end - seg_start
 
@@ -69,7 +43,6 @@ def relabel_segment(frames, actions, seg_start, seg_end, rng):
         if max_k < 1:
             continue
 
-        # Sample future goal indices
         k_values = rng.integers(1, max_k + 1, size=NUM_RELABELS)
 
         for k in k_values:
@@ -89,13 +62,6 @@ def relabel_segment(frames, actions, seg_start, seg_end, rng):
 
 
 def build_dataset(frames, actions, segments):
-    """
-    Build the full offline RL dataset from all segments.
-
-    Instead of duplicating image data, we store indices into the
-    frames array. The actual images are loaded on-the-fly during training.
-    Proximity/heading are looked up by index at save time.
-    """
     rng = np.random.default_rng(SEED)
     all_transitions = []
 
@@ -115,15 +81,6 @@ def build_dataset(frames, actions, segments):
 
 
 def save_dataset(frames, headings, proximity, transitions, output_dir):
-    """
-    Save the offline RL dataset in an efficient format.
-
-    We save:
-      - frames.npz: all frames + headings + proximity (shared, referenced by index)
-      - transitions.npz: arrays of obs_idx, goal_idx, action, reward, next_obs_idx, done,
-                         obs_proximity, goal_proximity (pre-indexed for convenience)
-      - dataset_info.json: metadata
-    """
     os.makedirs(output_dir, exist_ok=True)
 
     n = len(transitions)
@@ -134,11 +91,9 @@ def save_dataset(frames, headings, proximity, transitions, output_dir):
     reward_arr = np.array([t["reward"] for t in transitions], dtype=np.float32)
     done_arr = np.array([t["done"] for t in transitions], dtype=np.bool_)
 
-    # Pre-index proximity for each transition (avoids lookup at training time)
-    obs_proximity = proximity[obs_idx]       # (n,) float32
-    goal_proximity = proximity[goal_idx]     # (n,) float32
+    obs_proximity = proximity[obs_idx]
+    goal_proximity = proximity[goal_idx]
 
-    # Save frames + sensor data (shared bank, referenced by index)
     np.savez_compressed(
         os.path.join(output_dir, "frames.npz"),
         frames=frames,
@@ -146,7 +101,6 @@ def save_dataset(frames, headings, proximity, transitions, output_dir):
         proximity=proximity,
     )
 
-    # Save transitions (indices + labels + pre-indexed proximity)
     np.savez_compressed(
         os.path.join(output_dir, "transitions.npz"),
         obs_idx=obs_idx,
@@ -159,7 +113,6 @@ def save_dataset(frames, headings, proximity, transitions, output_dir):
         goal_proximity=goal_proximity,
     )
 
-    # Compute stats
     reward_pos = np.sum(reward_arr > 0)
     reward_neg = np.sum(reward_arr < 0)
     action_counts = {int(a): int(c) for a, c in

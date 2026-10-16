@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""
-receiver.py — TCP client for free exploration data collection (IMG5 protocol).
-
-Connects to ESP32-S3 single board, receives IMG5 packets containing:
-  - JPEG frame (captured by OV3660 camera)
-  - action_taken (from pink noise explorer / policy)
-  - prox_blocked (from APDS9960 proximity sensor on Arduino)
-  - proximity (raw APDS9960 value, 0–255)
-  - heading_deg (from IMU via Arduino UART)
-  - timestep (session-local index)
-
-Saves:
-  data/<session_name>/
-    trajectory.jsonl      ← one JSON line per timestep
-    images/frame_NNNNNN.jpg
-    metadata.json         ← session-level metadata
-"""
 
 import socket
 import struct
@@ -34,26 +16,20 @@ try:
 except ImportError:
     HAS_CV2 = False
 
-# ═══════════════════════════════════════════════
-#  Configuration — edit these before running
-# ═══════════════════════════════════════════════
-ESP32_IP        = "192.168.68.101"   # ESP32-S3 board IP
+ESP32_IP        = "192.168.68.101"
 ESP32_PORT      = 8888
-SESSION_NAME    = ""                # auto-generated if empty
-OUTPUT_DIR      = "data"            # base output directory
-IMG_SIZE        = 96                # resize to NxN
-SHOW_PREVIEW    = True              # live OpenCV preview
-# ═══════════════════════════════════════════════
+SESSION_NAME    = ""
+OUTPUT_DIR      = "data"
+IMG_SIZE        = 96
+SHOW_PREVIEW    = True
 
-# IMG5 protocol (must match wifi_stream.h)
-MAGIC = 0x494D4735           # "IMG5"
-HEADER_SIZE = 26             # 4+4+4+1+1+4+4+4
+MAGIC = 0x494D4735
+HEADER_SIZE = 26
 
 ACTION_NAMES = ["FWD", "RIGHT", "LEFT", "STOP"]
 
 
 def recv_exact(sock, n):
-    """Receive exactly n bytes."""
     buf = bytearray()
     while len(buf) < n:
         chunk = sock.recv(n - len(buf))
@@ -64,14 +40,12 @@ def recv_exact(sock, n):
 
 
 def connect_with_retry(ip, port, max_retries=10, timeout=30):
-    """Connect to ESP32 with retry + exponential backoff."""
     for attempt in range(1, max_retries + 1):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect((ip, port))
 
-            # TCP tuning for reliability
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
@@ -90,16 +64,10 @@ def connect_with_retry(ip, port, max_retries=10, timeout=30):
 
 
 def receive_loop(sock, img_dir, traj_file, start_frame=0):
-    """
-    Receive frames until disconnect or Ctrl-C.
-
-    Returns (frame_count, override_count) so the caller can resume.
-    """
     frame_count = start_frame
     override_count = 0
 
     while True:
-        # ── Receive IMG5 header (26 bytes) ──
         header = recv_exact(sock, HEADER_SIZE)
         (magic, frame_id, timestep, action_taken,
          prox_blocked, proximity, heading_deg, jpeg_len) = \
@@ -109,19 +77,15 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
             print(f"  [WARN] Bad magic 0x{magic:08X}, resync...")
             continue
 
-        # ── Receive JPEG data ──
         jpeg_data = recv_exact(sock, jpeg_len)
 
-        # ── Decode & resize to 96×96 ──
         img = Image.open(BytesIO(jpeg_data)).convert("RGB")
         img_resized = img.resize((IMG_SIZE, IMG_SIZE), Image.LANCZOS)
 
-        # ── Save image ──
         filename = f"frame_{frame_count:06d}.jpg"
         filepath = os.path.join(img_dir, filename)
         img_resized.save(filepath, quality=95)
 
-        # ── Write trajectory line ──
         entry = {
             "t": frame_count,
             "frame": filename,
@@ -134,13 +98,11 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
         traj_file.write(json.dumps(entry) + "\n")
         traj_file.flush()
 
-        # Track overrides
         if prox_blocked:
             override_count += 1
 
         frame_count += 1
 
-        # ── Console output (every 10 frames) ──
         if frame_count % 10 == 0:
             action_str = ACTION_NAMES[action_taken] if action_taken < 4 else "?"
             print(f"  [{frame_count:>6}] "
@@ -150,7 +112,6 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
                   f"blk={prox_blocked} "
                   f"({override_count} overrides)")
 
-        # ── Live preview ──
         if HAS_CV2 and SHOW_PREVIEW:
             arr = np.array(img_resized)
             display = cv2.resize(arr, (384, 384),
@@ -174,7 +135,6 @@ def receive_loop(sock, img_dir, traj_file, start_frame=0):
 
 
 def main():
-    # Generate session name if not set
     session_name = SESSION_NAME
     if not session_name:
         session_name = datetime.now().strftime("session_%Y%m%d_%H%M%S")
@@ -192,12 +152,10 @@ def main():
     override_count = 0
     t_start = time.time()
 
-    # Open trajectory file for streaming writes (append mode for reconnects)
     traj_file = open(traj_path, "a")
 
     try:
         while True:
-            # ── Connect (with retry) ──
             print(f"\nConnecting to {ESP32_IP}:{ESP32_PORT}...")
             try:
                 sock = connect_with_retry(ESP32_IP, ESP32_PORT)
@@ -205,20 +163,18 @@ def main():
                 print(f"  {e}")
                 break
 
-            # ── Receive until disconnect ──
             try:
                 fc, oc = receive_loop(sock, img_dir, traj_file,
                                       start_frame=frame_count)
                 frame_count = fc
                 override_count += oc
-                break  # clean exit (user pressed 'q')
+                break
 
             except (ConnectionError, socket.timeout) as e:
                 print(f"\n  Connection lost: {e}")
                 print(f"  Frames so far: {frame_count}")
                 print(f"  Reconnecting in 3s...")
                 time.sleep(3)
-                # Loop back to reconnect
             finally:
                 try:
                     sock.close()
@@ -232,7 +188,6 @@ def main():
         if HAS_CV2 and SHOW_PREVIEW:
             cv2.destroyAllWindows()
 
-        # Save session metadata
         elapsed = time.time() - t_start
         metadata = {
             "session_name": session_name,

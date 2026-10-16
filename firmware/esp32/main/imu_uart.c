@@ -1,15 +1,4 @@
-/**
- * @file imu_uart.c
- * @brief IMU heading + proximity reader via UART from Arduino Nano BLE Sense Rev2.
- *
- * Parses "H:<heading>,P:<proximity>\n" lines from UART1 in a background task.
- * Provides thread-safe access to the latest heading and proximity values.
- *
- * Wiring:
- *   Arduino TX → ESP32 GPIO 3  (UART1 RX)
- *   Arduino RX → ESP32 GPIO 48 (UART1 TX) [optional]
- *   GND → GND
- */
+
 #include "imu_uart.h"
 #include "config.h"
 
@@ -24,26 +13,19 @@
 
 static const char *TAG = "imu";
 
-/* UART config */
+
 #define IMU_UART_NUM      UART_NUM_1
 #define IMU_UART_BAUD     115200
-// #define IMU_UART_RX_PIN   3       /* ESP32 GPIO for UART1 RX */
-// #define IMU_UART_TX_PIN   48      /* ESP32 GPIO for UART1 TX */
 #define IMU_UART_BUF_SIZE 256
 #define IMU_LINE_BUF_SIZE 64
 
-/* Thread-safe heading + proximity storage */
+
 static volatile float   s_heading   = -1.0f;
-static volatile uint8_t s_proximity = 255;   /* default: far (no reading yet) */
+static volatile uint8_t s_proximity = 255;
 static volatile bool    s_ready     = false;
 static volatile uint32_t s_update_count = 0;
 
-/**
- * @brief Background task: reads UART lines and parses heading + proximity.
- *
- * Expected line format: "H:<heading>,P:<proximity>\n"
- * Also accepts legacy "H:<heading>\n" (proximity stays at 0).
- */
+
 static void imu_reader_task(void *pvParam)
 {
     uint8_t byte;
@@ -62,20 +44,20 @@ static void imu_reader_task(void *pvParam)
             if (line_pos > 0) {
                 line[line_pos] = '\0';
 
-                /* Parse "H:<heading>,P:<proximity>" */
+
                 if (line[0] == 'H' && line[1] == ':') {
-                    /* Extract heading */
+
                     char *h_start = &line[2];
                     char *comma = strchr(h_start, ',');
 
                     float h;
                     if (comma) {
-                        /* Temporarily null-terminate at comma to parse heading */
+
                         *comma = '\0';
                         h = strtof(h_start, NULL);
-                        *comma = ',';  /* Restore */
+                        *comma = ',';
 
-                        /* Parse ",P:<proximity>" */
+
                         if (comma[1] == 'P' && comma[2] == ':') {
                             int p = atoi(&comma[3]);
                             if (p >= 0 && p <= 255) {
@@ -83,7 +65,7 @@ static void imu_reader_task(void *pvParam)
                             }
                         }
                     } else {
-                        /* Legacy format: "H:<heading>" only */
+
                         h = strtof(h_start, NULL);
                     }
 
@@ -98,7 +80,7 @@ static void imu_reader_task(void *pvParam)
                                          h, s_proximity);
                             }
                         }
-                        /* Periodic log to confirm UART data flow */
+
                         if (s_update_count % 100 == 0) {
                             ESP_LOGI(TAG, "IMU heading: %.1f deg  prox: %d (%lu updates)",
                                      h, s_proximity,
@@ -106,7 +88,7 @@ static void imu_reader_task(void *pvParam)
                         }
                     }
                 }
-                /* Log info/error messages from Arduino */
+
                 else if (line[0] == 'I' && line[1] == ':') {
                     ESP_LOGI(TAG, "Arduino: %s", &line[2]);
                 }
@@ -119,14 +101,14 @@ static void imu_reader_task(void *pvParam)
         } else if (line_pos < IMU_LINE_BUF_SIZE - 1) {
             line[line_pos++] = (char)byte;
         } else {
-            line_pos = 0;  /* Overflow — reset */
+            line_pos = 0;
         }
     }
 }
 
 esp_err_t imu_init(void)
 {
-    /* Configure UART */
+
     uart_config_t uart_config = {
         .baud_rate  = IMU_UART_BAUD,
         .data_bits  = UART_DATA_8_BITS,
@@ -147,7 +129,7 @@ esp_err_t imu_init(void)
     ESP_LOGI(TAG, "UART%d initialized (baud=%d, RX=GPIO%d, TX=GPIO%d)",
              IMU_UART_NUM, IMU_UART_BAUD, IMU_UART_RX_PIN, IMU_UART_TX_PIN);
 
-    /* Start reader task on core 0 (core 1 used by data collection) */
+
     xTaskCreatePinnedToCore(
         imu_reader_task, "imu_read",
         4096, NULL, 6, NULL, 0

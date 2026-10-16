@@ -1,13 +1,3 @@
-"""
-distill.py — Phase 5: Knowledge distillation from teacher to student.
-
-Dual-level distillation:
-  1. Action distribution matching (KL divergence with temperature)
-  2. Correlation feature matching (MSE between projected cues)
-  3. Hard label loss (cross-entropy with teacher's argmax)
-
-Both teacher and student receive proximity input for their policy heads.
-"""
 
 import os
 import time
@@ -22,26 +12,20 @@ from models import TeacherModel
 from student_model import StudentModel
 from dataset import get_dataloader
 
-# ═══════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════
 DATASET_DIR         = "./data/offline_dataset"
 TEACHER_CKPT        = "./checkpoints/teacher/best.pt"
 CHECKPOINT_DIR      = "./checkpoints/student"
 DEVICE              = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Teacher config (must match training)
 TEACHER_FEAT_DIM    = 512
 TEACHER_CUE_DIM     = 512
 NUM_ACTIONS         = 4
 
-# Distillation hyperparameters
-TEMPERATURE         = 4.0       # softmax temperature for KD
-ALPHA_ACTION        = 1.0       # weight for KL divergence loss
-ALPHA_CORR          = 0.5       # weight for correlation matching loss
-ALPHA_HARD          = 0.5       # weight for hard label CE loss
+TEMPERATURE         = 4.0
+ALPHA_ACTION        = 1.0
+ALPHA_CORR          = 0.5
+ALPHA_HARD          = 0.5
 
-# Training
 LR                  = 1e-3
 BATCH_SIZE          = 256
 TOTAL_STEPS         = 100_000
@@ -49,7 +33,6 @@ EVAL_EVERY          = 2_000
 SAVE_EVERY          = 20_000
 NUM_WORKERS         = 4
 SEED                = 42
-# ═══════════════════════════════════════════
 
 
 def set_seed(seed):
@@ -60,7 +43,6 @@ def set_seed(seed):
 
 
 def load_teacher(ckpt_path):
-    """Load the trained teacher model (frozen)."""
     teacher = TeacherModel(
         feat_dim=TEACHER_FEAT_DIM, cue_dim=TEACHER_CUE_DIM,
         num_actions=NUM_ACTIONS
@@ -70,7 +52,6 @@ def load_teacher(ckpt_path):
     teacher.load_state_dict(ckpt["model_state"])
     teacher.eval()
 
-    # Freeze all parameters
     for p in teacher.parameters():
         p.requires_grad = False
 
@@ -81,7 +62,6 @@ def load_teacher(ckpt_path):
 
 
 class DistillationTrainer:
-    """Dual-level knowledge distillation trainer."""
 
     def __init__(self, teacher):
         self.teacher = teacher
@@ -92,24 +72,20 @@ class DistillationTrainer:
         )
 
     def distill_step(self, batch):
-        """One distillation gradient step."""
         obs = batch["obs"].to(DEVICE)
         goal = batch["goal"].to(DEVICE)
-        obs_proximity = batch["obs_proximity"].to(DEVICE)   # (B,) normalized [0,1]
+        obs_proximity = batch["obs_proximity"].to(DEVICE)
 
-        # ── Teacher forward (no grad) ──
         with torch.no_grad():
             teacher_cue = self.teacher.encode_and_correlate(obs, goal)
             teacher_logits = self.teacher.policy(teacher_cue, obs_proximity)
             teacher_actions = teacher_logits.argmax(dim=-1)
 
-        # ── Student forward ──
-        student_corr_cue = self.student.get_cue(obs, goal)        # (B, 258)
+        student_corr_cue = self.student.get_cue(obs, goal)
         student_logits = self.student.forward_with_cue(
             student_corr_cue, obs_proximity
-        )                                                          # (B, 4)
+        )
 
-        # ── Loss 1: Action distribution matching (KL divergence) ──
         teacher_soft = F.log_softmax(teacher_logits / TEMPERATURE, dim=-1)
         student_soft = F.log_softmax(student_logits / TEMPERATURE, dim=-1)
         loss_action = F.kl_div(
@@ -117,15 +93,11 @@ class DistillationTrainer:
             reduction='batchmean'
         ) * (TEMPERATURE ** 2)
 
-        # ── Loss 2: Correlation feature matching (MSE) ──
-        # Match raw correlation cue (no proximity) to teacher cue
         student_cue_proj = self.student.project_cue(student_corr_cue)
         loss_corr = F.mse_loss(student_cue_proj, teacher_cue)
 
-        # ── Loss 3: Hard label CE ──
         loss_hard = F.cross_entropy(student_logits, teacher_actions)
 
-        # ── Combined loss ──
         total_loss = (ALPHA_ACTION * loss_action +
                       ALPHA_CORR * loss_corr +
                       ALPHA_HARD * loss_hard)
@@ -136,7 +108,6 @@ class DistillationTrainer:
         self.optimizer.step()
         self.scheduler.step()
 
-        # ── Compute agreement ──
         student_actions = student_logits.argmax(dim=-1)
         agreement = (student_actions == teacher_actions).float().mean().item()
 
@@ -151,7 +122,6 @@ class DistillationTrainer:
 
     @torch.no_grad()
     def evaluate(self, loader, max_batches=50):
-        """Evaluate student-teacher agreement and per-action accuracy."""
         self.student.eval()
         correct = 0
         total = 0
@@ -192,7 +162,6 @@ class DistillationTrainer:
 
     def save(self, path, step, metrics):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        # Save only deploy-relevant weights (exclude corr_projector)
         deploy_state = {
             k: v for k, v in self.student.state_dict().items()
             if "corr_projector" not in k
@@ -214,11 +183,9 @@ def main():
     set_seed(SEED)
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-    # Load teacher
     print(f"\n[*] Loading teacher from: {TEACHER_CKPT}")
     teacher = load_teacher(TEACHER_CKPT)
 
-    # Data
     print(f"[*] Loading dataset from: {DATASET_DIR}")
     train_loader = get_dataloader(
         DATASET_DIR, batch_size=BATCH_SIZE,
@@ -229,13 +196,11 @@ def main():
         augment=False, num_workers=NUM_WORKERS
     )
 
-    # Trainer
     trainer = DistillationTrainer(teacher)
     deploy_params = trainer.student.get_deploy_params()
     print(f"[*] Student model: {deploy_params:,} deploy params "
           f"(~{deploy_params // 1024} KB INT8)")
 
-    # Training
     action_names = {0: "FWD", 1: "LFT", 2: "RGT", 3: "STP"}
     print(f"\n[*] Distilling for {TOTAL_STEPS} steps")
     print(f"    T={TEMPERATURE}, alpha_action={ALPHA_ACTION}, "
